@@ -45,5 +45,6 @@ export {compressArchive} from './official-archive';
 
 export {uuidv7} from '../vendor-source/src/app/util/uuid-v7';
 export {getStartOfNextDayDiffMs} from '../vendor-source/src/app/util/start-of-next-day.util';
-export {selectAllTasksWithReminder,selectAllTasksWithDeadlineReminder} from '../vendor-source/src/app/features/tasks/store/task.selectors';
+export {selectAllTasksWithReminder,selectAllTasksWithDeadlineReminder,selectUndoneOverdue,selectUndoneOverdueDeadlineTasks} from '../vendor-source/src/app/features/tasks/store/task.selectors';
+export {selectAllTasksDueToday} from '../vendor-source/src/app/features/planner/store/planner.selectors';
 export {millisecondsDiffToRemindOption,remindOptionToMilliseconds} from '../vendor-source/src/app/features/tasks/util/remind-option-to-milliseconds';

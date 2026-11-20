@@ -1,5 +1,6 @@
 import {publicReminder,reminderOutput} from './reminders.js';
 import {searchTasks} from './search.js';
+import {todayView} from './today.js';
 import {officialModule} from './projection.js';
 import {dateSchema,hasDates,validateDates} from './dates.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -45,6 +46,10 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
  const day=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
  mcp.registerTool('search_tasks',{description:'Filter active tasks by title or notes, project, tag, due-day range, and done state. Archived tasks are excluded unless includeArchived is true. Due days use the configured timezone (default Europe/Brussels), including the account start-of-next-day offset. TODAY is not a tag; a task due today is matched by its due day. Results are paginated in task-list order, then archive order.',inputSchema:{...pageSchema,text:z.string().max(200).optional(),projectId:z.string().min(1).max(255).optional(),tagId:z.string().min(1).max(255).optional(),dueFrom:day.optional(),dueTo:day.optional(),isDone:z.boolean().optional(),includeArchived:z.boolean().default(false)},outputSchema:{serverSeq:serverSeqOutput,total:z.number().int().min(0),items:z.array(taskOutput)},annotations},async args=>{
   try{const p=await provider();const official=await officialModule();const {total,items}=searchTasks(p.state,args,official);return output({serverSeq:p.serverSeq,total,items:items.map(publicTask)});}catch(e){return error(e);}
+ });
+ const todayOutput={today:z.string(),timeZone:z.string(),scheduledToday:z.array(taskOutput),overdue:z.array(taskOutput),overdueDeadlines:z.array(taskOutput)};
+ mcp.registerTool('list_today',{description:'Tasks due or scheduled today, plus undone overdue tasks and undone overdue deadlines. Today is the calendar day in the configured timezone (default Europe/Brussels), shifted by the account start-of-next-day setting. Archived tasks and tasks in archived projects are omitted. This uses the same planner and overdue selectors as Super Productivity.',inputSchema:{},outputSchema:{serverSeq:serverSeqOutput,...todayOutput},annotations},async()=>{
+  try{const p=await provider();const official=await officialModule();const view=todayView(p.state,official);return output({serverSeq:p.serverSeq,today:view.today,timeZone:view.timeZone,scheduledToday:view.scheduledToday.map(publicTask),overdue:view.overdue.map(publicTask),overdueDeadlines:view.overdueDeadlines.map(publicTask)});}catch(e){return error(e);}
  });
  mcp.registerTool('get_task',{description:'Get a task by id. Archived tasks are included in the search.',inputSchema:{id:z.string().min(1).max(255)},outputSchema:{serverSeq:serverSeqOutput,task:taskOutput.nullable()},annotations},async({id})=>{
   try{const p=await provider();const task=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:(p.state.archiveYoung?.task?.entities?.[id]??p.state.archiveOld?.task?.entities?.[id]??null);return output({serverSeq:p.serverSeq,task:task?publicTask(task):null});}catch(e){return error(e);}
