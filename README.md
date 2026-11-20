@@ -13,14 +13,14 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Status and lookup | get_sync_status / list_tasks / get_task |
 | Lists | list_projects / list_tags / list_archived_tasks |
 | Boards | get_board |
-| Create and edit | create_task / update_task |
+| Create and edit | create_task / create_subtask / update_task / reorder_subtask / detach_subtask / attach_task |
 | Done and reopen | complete_task / reopen_task |
 | Tags | update_task_tags |
 | Standard Kanban | set_task_kanban_status |
 | Projects | create_project |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 16 tools. With writes off, only the 7 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 20 tools. With writes off, only the 7 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - Tag updates keep tags that are not named. TODAY follows the due day and is not a normal tag.
 - Standard Kanban accepts `todo`, `in_progress`, and `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
@@ -118,7 +118,7 @@ Tests use public fixtures and fake HTTP. They do not need personal credentials. 
 
 ## Scope
 
-Create and update cover [schedules and deadlines](docs/TASK-DATES.md), [standard reminders](docs/TASK-REMINDERS.md), and [subtasks](docs/TASK-SUBTASKS.md). Calendar days use `TZ`, default `Europe/Brussels`. Whether a reminder is shown depends on the Super Productivity app that syncs this account and on that device's notification permission.
+Create and update cover [schedules and deadlines](docs/TASK-DATES.md), [standard reminders](docs/TASK-REMINDERS.md), and [subtasks](docs/TASK-SUBTASKS.md). `create_subtask` is the same Add SubTask write as `create_task` with `parentId`. `reorder_subtask` sends the official move-up, move-down, move-to-top, or move-to-bottom action. `detach_subtask` sends `convertToMainTask`. `attach_task` sends `convertToSubTask` and refuses a task that already has subtasks, an issue, a repeat config, a due time, or a reminder. Calendar days use `TZ`, default `Europe/Brussels`. Whether a reminder is shown depends on the Super Productivity app that syncs this account and on that device's notification permission.
 
 The adapter targets the Super Productivity revision in [upstream.json](upstream.json) and schema version 4. It does not promise compatibility with other versions or every official operation.
 

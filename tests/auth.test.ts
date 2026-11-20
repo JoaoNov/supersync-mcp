@@ -109,8 +109,12 @@ test('write tools are callable only when the opt-in flag is set',async()=>{
   assert.equal((await post(live.port,initialize,{Authorization:'Bearer '+KEY})).status,200);
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,16);
+  assert.equal(names.length,20);
   assert.equal(names.includes('create_task'),true);
+  assert.equal(names.includes('create_subtask'),true);
+  assert.equal(names.includes('reorder_subtask'),true);
+  assert.equal(names.includes('detach_subtask'),true);
+  assert.equal(names.includes('attach_task'),true);
   await post(live.port,{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'create_task',arguments:{requestId:'req-1',expectedServerSeq:0,projectId:'p',title:'hello'}}},{Authorization:'Bearer '+KEY});
   assert.equal(live.writes(),1);
  }finally{live.close();}
