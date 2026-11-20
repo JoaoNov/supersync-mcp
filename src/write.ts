@@ -9,7 +9,7 @@ import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
 import {dateActions,dateContext,dateState,hasDates,validateDates,type DateInput} from './dates.js';
 import {applyArchive} from './archive.js';
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean};
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string};
 // Each account bridge serves only its linked account. Only its active, top-level tasks
 // may be parents; archived/foreign IDs and malformed existing hierarchies fail closed.
 export function validateParent(state:any,parentId:string,projectId:string){
@@ -97,6 +97,21 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
     return structuredClone(child);
    });
    action={type:'[Task Shared] deleteTask',task:{...structuredClone(task),subTasks}};
+  }else if(input.kind==='move'){
+   taskId=input.id!;
+   const target=input.targetProjectId;
+   if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
+   if(!target||!Object.hasOwn(p.state.projects.entities,target)||!p.state.projects.entities[target])throw new Error('PROJECT_NOT_FOUND');
+   const task=p.state.tasks.entities[taskId];
+   if(task.parentId)throw new Error('INVALID_TASK_HIERARCHY');
+   if(task.projectId===target)throw new Error('WRITE_VALIDATION_FAILED');
+   const subTaskIds=Array.isArray(task.subTaskIds)?task.subTaskIds:[];
+   const subTasks=subTaskIds.map((id:string)=>{
+    const child=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:undefined;
+    if(!child||child.id!==id||child.parentId!==taskId)throw new Error('INVALID_TASK_HIERARCHY');
+    return structuredClone(child);
+   });
+   action={type:'[Task Shared] moveToOtherProject',task:{...structuredClone(task),subTasks},targetProjectId:target};
   }else if(input.kind==='archive'){
    if(input.confirm!==true)throw new Error('WRITE_VALIDATION_FAILED');
    const entities=p.state.tasks.entities;
@@ -166,6 +181,14 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    predicted={...predicted,...archived};
    if(!bulkIds?.every(id=>!predicted.tasks.entities[id]&&predicted.archiveYoung.task.entities[id]?.isDone===true&&predicted.archiveYoung.task.entities[id].dueDay===undefined&&predicted.archiveYoung.task.entities[id].dueWithTime===undefined))throw new Error('WRITE_VALIDATION_FAILED');
   }else if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  if(input.kind==='move'){
+   const target=input.targetProjectId!;
+   const ids=[taskId,...(action.task.subTaskIds??[])];
+   if(ids.some((id:string)=>predicted.tasks.entities[id]?.projectId!==target))throw new Error('WRITE_VALIDATION_FAILED');
+   if(!predicted.projects.entities[target]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+   if((action.task.subTaskIds??[]).some((id:string)=>predicted.projects.entities[target].taskIds.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+   if(predicted.projects.entities[p.state.tasks.entities[taskId].projectId]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+  }
   if(input.kind==='create'&&input.parentId!==undefined){
    validateParent(predicted,input.parentId,input.projectId!);
    if(created.parentId!==input.parentId||created.projectId!==input.projectId||predicted.tasks.entities[input.parentId].subTaskIds.filter((id:string)=>id===taskId).length!==1)throw new Error('WRITE_VALIDATION_FAILED');
