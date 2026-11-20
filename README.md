@@ -10,7 +10,7 @@ It is not part of the official Super Productivity project. It is a single-accoun
 
 | Kind | Tools |
 |---|---|
-| Status and lookup | get_sync_status / list_tasks / search_tasks / list_today / get_task / get_task_time |
+| Status and lookup | get_sync_status / list_tasks / search_tasks / list_today / get_task / get_task_time / time_by_day |
 | Lists | list_projects / list_tags / list_archived_tasks |
 | Boards | get_board |
 | Create and edit | create_task / create_subtask / update_task / reorder_subtask / detach_subtask / attach_task |
@@ -23,10 +23,11 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Projects | create_project / move_task |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 30 tools. With writes off, only the 10 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 31 tools. With writes off, only the 11 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - `search_tasks` filters active tasks and, when asked, archived tasks. It matches title and notes, one project, one tag, a due-day range, and done state. TODAY follows the due day and is not a tag filter.
 - `list_today` returns tasks due or scheduled today, undone overdue tasks, and undone overdue deadlines. The day is Europe/Brussels unless `TZ` is set, and it follows the account start-of-next-day offset. Archived tasks and tasks in archived projects are omitted.
+- `time_by_day` returns tracked time for an inclusive date range in one call. Omit the dates for the current Monday–Sunday week. Totals use leaf `timeSpentOnDay` only, including archived tasks, so a parent that also stores its subtasks' time is not counted again. Day keys are the app's logical days and are not re-split by hour. The default week follows the account `startOfNextDayTime` when that setting exists. When it does not, `DAY_START_HOUR` (default 4) ends the working day at 04:00 in `TZ`. An explicit account offset, including midnight or a value other than 4, wins over `DAY_START_HOUR`.
 - Tag updates keep tags that are not named. TODAY follows the due day and is not a normal tag.
 - Standard Kanban accepts `todo`, `in_progress`, and `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
 - `delete_task` requires `confirm: true`. It sends the official `[Task Shared] deleteTask` operation (`opType` `DEL`) for an active task, including nested subtasks. Archived tasks are refused. Planner day ids are not rewritten.
