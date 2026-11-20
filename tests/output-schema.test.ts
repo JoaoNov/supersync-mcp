@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';import {makeServer} from '../src/tools.js';
-test('all 16 tools declare and return schema-valid structured results; missing tasks and errors remain valid',async()=>{
+test('all 17 tools declare and return schema-valid structured results; missing tasks and errors remain valid',async()=>{
  const board={id:'b',title:'Board',cols:3,panels:[{id:'column',title:'Work',taskIds:['t'],projectIds:['p'],includedTagIds:[],excludedTagIds:[],taskDoneState:1,scheduledState:1,backlogState:1,isParentTasksOnly:false}]};
  const entity={id:'t',title:'fixture',isDone:false,tagIds:['tag'],dueDay:null,dueWithTime:null,notes:undefined,secret:'hidden'};
  const provider=async()=>({serverSeq:12,clock:{a:12},state:{boards:{boardCfgs:[board]},tasks:{ids:['t'],entities:{t:entity}},projects:{ids:['p'],entities:{p:{id:'p',title:'Project',color:null}}},tag:{ids:['tag'],entities:{tag:{id:'tag',title:'Tag'}}},archiveOld:{task:{entities:{archived:{...entity,id:'archived'}}}}}});
@@ -8,7 +8,7 @@ test('all 16 tools declare and return schema-valid structured results; missing t
  const server=makeServer(provider,true,writer),client=new Client({name:'schema-test',version:'1'}),[a,b]=InMemoryTransport.createLinkedPair();
  await server.connect(a);await client.connect(b);
  try{
-  const tools=await client.listTools();assert.ok(!tools.tools.some(t=>t.name.startsWith('controller_')||t.name.startsWith('submit_workflow_')||['get_workflow_context','get_workflow_command','get_review_material'].includes(t.name)));assert.equal(tools.tools.length,16);
+  const tools=await client.listTools();assert.ok(!tools.tools.some(t=>t.name.startsWith('controller_')||t.name.startsWith('submit_workflow_')||['get_workflow_context','get_workflow_command','get_review_material'].includes(t.name)));assert.equal(tools.tools.length,17);
   const columns=Array.from({length:3},(_,i)=>({title:'column '+i,includedTagIds:['tag']}));
   const args:Record<string,any>={create_project:{title:'New'},get_board:{id:'b'},create_board:{projectId:'p',title:'Board',columns},update_board:{id:'b',columns:[{id:'column',title:'Renamed'}]},get_task:{id:'t'},create_task:{projectId:'p',title:'New'},update_task:{id:'t',notes:'Updated'},update_task_tags:{id:'t',addTagIds:['tag']},set_task_kanban_status:{id:'t',status:'in_progress'},complete_task:{id:'t'},reopen_task:{id:'t'}};
   for(const tool of tools.tools){
