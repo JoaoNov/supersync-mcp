@@ -8,7 +8,8 @@ import {openAccountStore,type Account} from './accounts.js';
 import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
 import {dateActions,dateContext,dateState,hasDates,validateDates,type DateInput} from './dates.js';
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean};
+import {applyArchive} from './archive.js';
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean};
 // Each account bridge serves only its linked account. Only its active, top-level tasks
 // may be parents; archived/foreign IDs and malformed existing hierarchies fail closed.
 export function validateParent(state:any,parentId:string,projectId:string){
@@ -69,7 +70,7 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   if(existing){if(existing.fingerprint!==fingerprint)throw new Error('IDEMPOTENCY_KEY_REUSED');return await submit(db,input.requestId,cfg,deps.send,onInvalidate);}
   if(db.prepare("SELECT 1 FROM outbox WHERE status='pending'").get())throw new Error('WRITE_PENDING_RETRY_SAME_REQUEST');
   if(input.expectedServerSeq!==p.serverSeq)throw new Error('STALE_REVISION_READ_AGAIN');
-  const official=await deps.officialModule();const now=Date.now();let taskId:string,action:any;
+  const official=await deps.officialModule();const now=Date.now();let taskId:string,action:any,bulkIds:string[]|undefined;
   if(input.kind==='update_board'){
    taskId=input.id!;
    const {requestId,expectedServerSeq,kind,...value}=input;action=boardUpdateAction(p.state,value);
@@ -96,6 +97,26 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
     return structuredClone(child);
    });
    action={type:'[Task Shared] deleteTask',task:{...structuredClone(task),subTasks}};
+  }else if(input.kind==='archive'){
+   if(input.confirm!==true)throw new Error('WRITE_VALIDATION_FAILED');
+   const entities=p.state.tasks.entities;
+   const parents=(p.state.tasks.ids as string[]).filter(id=>Object.hasOwn(entities,id)&&entities[id]&&!entities[id].parentId&&entities[id].isDone===true).map(id=>entities[id]);
+   if(!parents.length)throw new Error('ARCHIVE_EMPTY');
+   const tasks=parents.map(parent=>{
+    const subTaskIds=Array.isArray(parent.subTaskIds)?parent.subTaskIds:[];
+    const subTasks=subTaskIds.map((id:string)=>{
+     const child=Object.hasOwn(entities,id)?entities[id]:undefined;
+     if(!child||child.id!==id||child.parentId!==parent.id)throw new Error('INVALID_TASK_HIERARCHY');
+     return structuredClone(child);
+    });
+    return {...structuredClone(parent),subTasks};
+   });
+   bulkIds=[];
+   const seen=new Set<string>();
+   for(const task of tasks)for(const id of [task.id,...(task.subTaskIds??[]),...task.subTasks.map((sub:any)=>sub.id)])if(typeof id==='string'&&id&&!seen.has(id)){seen.add(id);bulkIds.push(id);}
+   if(bulkIds.length>1000)throw new Error('WRITE_VALIDATION_FAILED');
+   taskId=bulkIds[0];
+   action={type:'[Task Shared] moveToArchive',tasks};
   }else{
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId))throw new Error('TASK_NOT_FOUND');
@@ -140,6 +161,10 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    if(gone.some((id:string)=>predicted.tasks.entities[id]))throw new Error('WRITE_VALIDATION_FAILED');
    for(const project of Object.values(predicted.projects.entities) as any[])if(gone.some((id:string)=>project?.taskIds?.includes(id)||project?.backlogTaskIds?.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
    for(const tag of Object.values(predicted.tag.entities) as any[])if(gone.some((id:string)=>tag?.taskIds?.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(input.kind==='archive'){
+   const archived=applyArchive(predicted,action,now,official);
+   predicted={...predicted,...archived};
+   if(!bulkIds?.every(id=>!predicted.tasks.entities[id]&&predicted.archiveYoung.task.entities[id]?.isDone===true&&predicted.archiveYoung.task.entities[id].dueDay===undefined&&predicted.archiveYoung.task.entities[id].dueWithTime===undefined))throw new Error('WRITE_VALIDATION_FAILED');
   }else if(!created)throw new Error('WRITE_VALIDATION_FAILED');
   if(input.kind==='create'&&input.parentId!==undefined){
    validateParent(predicted,input.parentId,input.projectId!);
@@ -155,7 +180,10 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   // Known limitation: entityIds is not set. Official clients attach that list on
   // multi-entity operations so SuperSync can report conflict metadata. This path
   // sends entityId only and does not invent the missing list.
-  const op={id:official.uuidv7(),clientId,actionType:type,opType:input.kind==='delete'?'DEL':index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':'TASK',entityId:taskId,payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
+  // Archive is the official bulk moveToArchive op: entityIds lists every parent
+  // and cascaded subtask so a concurrent subtask edit cannot resurrect it.
+  // Other writes still send entityId only.
+  const op={id:official.uuidv7(),clientId,actionType:type,opType:input.kind==='delete'?'DEL':index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':'TASK',entityId:taskId,...(input.kind==='archive'?{entityIds:bulkIds}:{}),payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
   ops.push(op);
   }
   const body=JSON.stringify(SuperSyncUploadOpsRequestSchema.parse({ops,clientId,lastKnownServerSeq:p.serverSeq,requestId:input.requestId}));
@@ -165,7 +193,8 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    db.prepare("INSERT INTO outbox(requestId,fingerprint,body,taskId,status) VALUES(?,?,?,?,'pending')").run(input.requestId,fingerprint,body,taskId);
    db.exec('COMMIT');
   }catch(e){db.exec('ROLLBACK');throw e;}
-  return await submit(db,input.requestId,cfg,deps.send,onInvalidate);
+  const submitted=await submit(db,input.requestId,cfg,deps.send,onInvalidate);
+  return bulkIds?{...submitted,archivedTaskIds:bulkIds}:submitted;
  }finally{db.close();}
 }
 
