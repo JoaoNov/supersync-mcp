@@ -94,7 +94,7 @@ test('read-only mode hides write tools and does not call the writer',async()=>{
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   assert.equal(listed.status,200);
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,7);
+  assert.equal(names.length,8);
   assert.equal(names.includes('create_task'),false);
   assert.equal(listed.json.result.tools.every((tool:{annotations?:{readOnlyHint?:boolean}})=>tool.annotations?.readOnlyHint),true);
   const called=await post(live.port,{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'create_task',arguments:{requestId:'req-1',expectedServerSeq:0,projectId:'p',title:'nope'}}},{Authorization:'Bearer '+KEY});
@@ -109,8 +109,11 @@ test('write tools are callable only when the opt-in flag is set',async()=>{
   assert.equal((await post(live.port,initialize,{Authorization:'Bearer '+KEY})).status,200);
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,16);
+  assert.equal(names.length,19);
   assert.equal(names.includes('create_task'),true);
+  assert.equal(names.includes('get_task_time'),true);
+  assert.equal(names.includes('log_task_time'),true);
+  assert.equal(names.includes('set_task_estimate'),true);
   await post(live.port,{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'create_task',arguments:{requestId:'req-1',expectedServerSeq:0,projectId:'p',title:'hello'}}},{Authorization:'Bearer '+KEY});
   assert.equal(live.writes(),1);
  }finally{live.close();}
