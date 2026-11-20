@@ -15,18 +15,20 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Boards | get_board |
 | Create and edit | create_task / update_task |
 | Done and reopen | complete_task / reopen_task |
+| Delete | delete_task |
 | Tags | update_task_tags |
 | Standard Kanban | set_task_kanban_status |
 | Projects | create_project |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 18 tools. With writes off, only the 9 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 19 tools. With writes off, only the 9 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - `search_tasks` filters active tasks and, when asked, archived tasks. It matches title and notes, one project, one tag, a due-day range, and done state. TODAY follows the due day and is not a tag filter.
 - `list_today` returns tasks due or scheduled today, undone overdue tasks, and undone overdue deadlines. The day is Europe/Brussels unless `TZ` is set, and it follows the account start-of-next-day offset. Archived tasks and tasks in archived projects are omitted.
 - Tag updates keep tags that are not named. TODAY follows the due day and is not a normal tag.
 - Standard Kanban accepts `todo`, `in_progress`, and `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
-- Task text updates change `title` and `notes`. Archive restore, delete, and card reordering are not provided.
+- `delete_task` requires `confirm: true`. It sends the official `[Task Shared] deleteTask` operation (`opType` `DEL`) for an active task, including nested subtasks. Archived tasks are refused. Planner day ids are not rewritten.
+- Task text updates change `title` and `notes`. Archive restore and card reordering are not provided.
 - Boards take a name, 1 to 50 columns, existing tags, and done, schedule, or backlog filters. They do not force eight states or mutual exclusion.
 - `update_board` changes settings of existing columns and keeps column order, card placement, project scope, and task bodies.
 - Argument limits are in [docs/BOARD-API-REVIEW.md](docs/BOARD-API-REVIEW.md).
