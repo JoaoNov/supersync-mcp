@@ -1,0 +1,59 @@
+services:
+  dev:
+    image: node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      npm_config_cache: /tmp/npm-cache
+      TZ: "${TZ:-Europe/Brussels}"
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 128
+    command: npm test
+
+  mcp:
+    image: node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    working_dir: /workspace
+    command: ["node", "--import", "tsx", "src/server.ts"]
+    environment:
+      LISTEN_HOST: "${LISTEN_HOST:-0.0.0.0}"
+      PORT: "${PORT:-1901}"
+      MCP_ALLOW_WRITES: "${MCP_ALLOW_WRITES:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-127.0.0.1,localhost}"
+      ACCESS_KEY_FILE: /workspace/secrets/access.key
+      RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-120}"
+      RATE_LIMIT_WINDOW_MS: "${RATE_LIMIT_WINDOW_MS:-60000}"
+      TZ: "${TZ:-Europe/Brussels}"
+    restart: unless-stopped
+    # Publish only on the host interface named by MCP_BIND_ADDRESS.
+    # 127.0.0.1 keeps the port off every other interface. Set it to a private
+    # address when clients on that network should connect directly.
+    ports:
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${MCP_HOST_PORT:-1901}:${PORT:-1901}"
+    volumes:
+      - ./src:/workspace/src:ro
+      - ./dist:/workspace/dist:ro
+      - ./vendor:/workspace/vendor:ro
+      - ./node_modules:/workspace/node_modules:ro
+      - ./package.json:/workspace/package.json:ro
+      - ./tsconfig.json:/workspace/tsconfig.json:ro
+      - ./secrets/supersync.json:/workspace/secrets/supersync.json:ro
+      - ./secrets/accounts.json:/workspace/secrets/accounts.json:ro
+      - ./secrets/access.key:/workspace/secrets/access.key:ro
+      - ./data:/workspace/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||1901)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,62 @@
+import {publicReminder,reminderOutput} from './reminders.js';
+import {dateSchema,hasDates,validateDates} from './dates.js';
+import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import {z} from 'zod';import {boardOutput,columnSchema,columnPatchSchema,publicBoard} from './boards.js';import {writeTask} from './write.js';import {current} from './sync.js';
+function selectFields(value:any,keys:string[]){return Object.fromEntries(keys.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]]));}
+const taskFields=['id','title','notes','isDone','projectId','tagIds','parentId','subTaskIds','timeEstimate','timeSpent','dueDay','dueWithTime','deadlineDay','deadlineWithTime','created','doneOn'];
+function publicTask(task:any){return {...selectFields(task,taskFields),scheduleReminder:publicReminder(task.dueWithTime,task.remindAt),deadlineReminder:publicReminder(task.deadlineWithTime,task.deadlineRemindAt)};}
+const taskOutput=z.object({
+ scheduleReminder:reminderOutput,deadlineReminder:reminderOutput,
+ id:z.string(),title:z.string(),notes:z.string().optional(),isDone:z.boolean().optional(),
+ projectId:z.string().optional(),tagIds:z.array(z.string()).optional(),
+ parentId:z.string().optional(),subTaskIds:z.array(z.string()).optional(),
+ timeEstimate:z.number().optional(),timeSpent:z.number().optional(),
+ dueDay:z.string().nullable().optional(),dueWithTime:z.number().nullable().optional(),
+ deadlineDay:z.string().nullable().optional(),deadlineWithTime:z.number().nullable().optional(),created:z.number().optional(),doneOn:z.number().optional(),
+});
+const contextOutput=z.object({id:z.string(),title:z.string(),color:z.string().nullable().optional(),isArchived:z.boolean().optional()});
+const serverSeqOutput=z.number().int().min(0);
+const writeOutput={taskId:z.string(),serverSeq:serverSeqOutput,requestId:z.string(),replayed:z.boolean()};
+export function makeServer(provider:typeof current=current,canWrite=false,writer:typeof writeTask=writeTask){
+ // Keep the largest supported 50-column board request valid, but bound work
+ // before schema validation (including unknown nested properties).
+ const mcp=new McpServer({name:'super-productivity-mcp',version:'0.3.0'},{maxToolInputElements:16_384});
+ const annotations={readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false};
+ const output=(value:Record<string,unknown>)=>{
+  const text=JSON.stringify(value);
+  return {content:[{type:'text' as const,text}],structuredContent:JSON.parse(text) as Record<string,unknown>};
+ };
+ const error=(e:unknown)=>{
+  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT']);
+  const code=e instanceof Error&&known.has(e.message)?e.message:'SYNC_FAILED';
+  console.warn(JSON.stringify({event:'sync_failed',reason:code}));
+  return {isError:true,content:[{type:'text' as const,text:'Could not complete the operation. Diagnostic code: '+code}]};
+ };
+ mcp.registerTool('get_sync_status',{description:'Current SuperSync status for this account.',outputSchema:{serverSeq:serverSeqOutput,readOnly:z.boolean(),activeTasks:z.number().int().min(0),archivesIncluded:z.boolean()},annotations},async()=>{try{const p=await provider();return output({serverSeq:p.serverSeq,readOnly:!canWrite,activeTasks:p.state.tasks.ids.length,archivesIncluded:true});}catch(e){return error(e);}});
+ const pageSchema={offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(100).default(50)};
+ for(const [tool,key] of [['list_tasks','tasks'],['list_archived_tasks','archives'],['list_projects','projects'],['list_tags','tag']] as const){
+  const descriptions={list_tasks:'List active tasks. Archived tasks are not included.',list_archived_tasks:'List archived tasks.',list_projects:'List synced projects.',list_tags:'List synced tags.'} as const;
+  mcp.registerTool(tool,{description:descriptions[tool],inputSchema:pageSchema,outputSchema:{serverSeq:serverSeqOutput,total:z.number().int().min(0),items:z.array(['tasks','archives'].includes(key)?taskOutput:contextOutput)},annotations},async({offset,limit})=>{
+   try{const p=await provider();const archivedEntities={...p.state.archiveOld?.task?.entities,...p.state.archiveYoung?.task?.entities};const model=key==='archives'?{ids:Object.keys(archivedEntities).sort(),entities:archivedEntities}:p.state[key];const ids=model.ids.slice(offset,offset+limit);return output({serverSeq:p.serverSeq,total:model.ids.length,items:ids.map((id:string)=>['tasks','archives'].includes(key)?publicTask(model.entities[id]):selectFields(model.entities[id],['id','title','color','isArchived']))});}catch(e){return error(e);}
+  });
+ }
+ mcp.registerTool('get_task',{description:'Get a task by id. Archived tasks are included in the search.',inputSchema:{id:z.string().min(1).max(255)},outputSchema:{serverSeq:serverSeqOutput,task:taskOutput.nullable()},annotations},async({id})=>{
+  try{const p=await provider();const task=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:(p.state.archiveYoung?.task?.entities?.[id]??p.state.archiveOld?.task?.entities?.[id]??null);return output({serverSeq:p.serverSeq,task:task?publicTask(task):null});}catch(e){return error(e);}
+ });
+
+ mcp.registerTool('get_board',{description:'Get a board by id, including its columns and card order. Returns null when the board is missing.',inputSchema:{id:z.string().min(1).max(255)},outputSchema:{serverSeq:serverSeqOutput,board:boardOutput.nullable()},annotations},async({id})=>{try{const p=await provider();return output({serverSeq:p.serverSeq,board:publicBoard(p.state.boards.boardCfgs.find((b:any)=>b.id===id))});}catch(e){return error(e);}});
+
+ if(canWrite){
+  const base={requestId:z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).describe('Unique id for this operation. After an unknown result, retry with the same id and the same arguments.'),expectedServerSeq:z.number().int().min(0).describe('serverSeq from the latest read. On conflict, read again and retry with a new request id.')};
+  const writeAnnotations={readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false};
+  mcp.registerTool('create_board',{description:'Create a board on a project with an explicit column layout. Tags, done state, and visible column count can be set. A fixed state count and mutual exclusion are not enforced.',inputSchema:{...base,projectId:z.string().min(1).max(255),title:z.string().min(1).max(200),cols:z.number().int().min(1).max(12).optional(),columns:z.array(columnSchema).min(1).max(50)},outputSchema:{boardId:z.string(),serverSeq:serverSeqOutput,requestId:z.string(),replayed:z.boolean()},annotations:writeAnnotations},async args=>{try{const {taskId,...result}=await writer({...args,kind:'create_board'});return output({...result,boardId:taskId});}catch(e){return error(e);}});
+  mcp.registerTool('update_board',{description:'Update a board name, visible column count, or the settings of existing columns. Does not add, remove, or reorder columns, and does not change card order, task text, or tags.',inputSchema:{...base,id:z.string().min(1).max(255),title:z.string().min(1).max(200).optional(),cols:z.number().int().min(1).max(12).optional(),columns:z.array(columnPatchSchema).min(1).max(50).optional()},outputSchema:{boardId:z.string(),serverSeq:serverSeqOutput,requestId:z.string(),replayed:z.boolean()},annotations:writeAnnotations},async args=>{try{if(args.title===undefined&&args.cols===undefined&&args.columns===undefined)throw new Error('WRITE_VALIDATION_FAILED');const {taskId,...result}=await writer({...args,kind:'update_board'});return output({...result,boardId:taskId});}catch(e){return error(e);}});
+  mcp.registerTool('create_project',{description:'Create a normal project with the given name. Rejects a name that already exists.',inputSchema:{...base,title:z.string().trim().min(1).max(200)},outputSchema:{projectId:z.string(),serverSeq:serverSeqOutput,requestId:z.string(),replayed:z.boolean()},annotations:writeAnnotations},async args=>{try{const {taskId,...result}=await writer({...args,kind:'create_project'});return output({...result,projectId:taskId});}catch(e){return error(e);}});
+  mcp.registerTool('create_task',{description:'Create a task in a project. With parentId, create one subtask of an active top-level task in the same project. Without parentId, create a normal task. Days are calendar dates in the configured timezone (default Europe/Brussels). Date-times are Unix milliseconds. Omit a field to leave it unset. Null clears that schedule or deadline. Reminders use scheduleReminder and deadlineReminder. Null means Never. Omit a reminder to keep it. Changing a time recalculates a relative reminder. A reminder cannot be set on a date-only value.',inputSchema:{...base,projectId:z.string().min(1).max(255),parentId:z.string().min(1).max(255).optional().describe('Id of an active top-level task in the same project. Omit to create a normal task.'),title:z.string().min(1).max(2000),notes:z.string().max(20000).optional(),...dateSchema},outputSchema:writeOutput,annotations:writeAnnotations},async args=>{try{validateDates(args);return output(await writer({...args,kind:'create'}));}catch(e){return error(e);}});
+  mcp.registerTool('update_task',{description:'Update an existing task title, notes, schedule, or deadline. Omitted fields are kept. Null clears the whole schedule or deadline. Days are calendar dates in the configured timezone (default Europe/Brussels). Date-times are Unix milliseconds. Reminders use scheduleReminder and deadlineReminder. Null means Never. Omit a reminder to keep it. Changing a time recalculates a relative reminder. A reminder cannot be set on a date-only value.',inputSchema:{...base,id:z.string().min(1).max(255),title:z.string().min(1).max(2000).optional(),notes:z.string().max(20000).optional(),...dateSchema},outputSchema:writeOutput,annotations:writeAnnotations},async args=>{try{validateDates(args);if(args.title===undefined&&args.notes===undefined&&!hasDates(args))throw new Error('WRITE_VALIDATION_FAILED');return output(await writer({...args,kind:'update'}));}catch(e){return error(e);}});
+  mcp.registerTool('update_task_tags',{description:'Add or remove normal tags. Tags that are not named are kept. Use this to move a task between tag-backed Kanban columns. TODAY is managed by the due day and is not a tag here. Use complete_task for the done column.',inputSchema:{...base,id:z.string().min(1).max(255),addTagIds:z.array(z.string().min(1).max(255)).max(100).default([]),removeTagIds:z.array(z.string().min(1).max(255)).max(100).default([])},outputSchema:writeOutput,annotations:writeAnnotations},async args=>{try{return output(await writer({...args,kind:'tags'}));}catch(e){return error(e);}});
+  mcp.registerTool('set_task_kanban_status',{description:'Set the standard Kanban status to todo, in_progress, or done. Updates the in-progress tag and done state together and keeps other tags. Use update_task_tags for custom columns.',inputSchema:{...base,id:z.string().min(1).max(255),status:z.enum(['todo','in_progress','done'])},outputSchema:writeOutput,annotations:writeAnnotations},async args=>{try{return output(await writer({...args,kind:'kanban'}));}catch(e){return error(e);}});
+  for(const kind of ['complete','reopen'] as const)mcp.registerTool(kind+'_task',{description:kind==='complete'?'Mark a task done.':'Mark a done task in the active area as not done. This does not restore an archived task.',inputSchema:{...base,id:z.string().min(1).max(255)},outputSchema:writeOutput,annotations:writeAnnotations},async args=>{try{return output(await writer({...args,kind}));}catch(e){return error(e);}});
+ }
+ return mcp;
+}

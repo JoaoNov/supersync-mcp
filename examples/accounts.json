@@ -1,0 +1,9 @@
+{
+  "accounts": [
+    {
+      "id": "owner",
+      "credentialsPath": "secrets/supersync.json",
+      "dataDir": "data"
+    }
+  ]
+}
