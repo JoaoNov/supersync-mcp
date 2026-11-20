@@ -7,9 +7,10 @@ import {current,invalidate,createSync} from './sync.js';
 import {openAccountStore,type Account} from './accounts.js';
 import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
-import {dateActions,dateContext,dateState,hasDates,validateDates,type DateInput} from './dates.js';
+import {dateActions,dateContext,dateState,hasDates,validDay,validateDates,type DateInput} from './dates.js';
 import {applyArchive} from './archive.js';
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string};
+const MAX_TRACKED_MS=1000*60*60*1000;
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'estimate';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string};
 // Each account bridge serves only its linked account. Only its active, top-level tasks
 // may be parents; archived/foreign IDs and malformed existing hierarchies fail closed.
 export function validateParent(state:any,parentId:string,projectId:string){
@@ -156,6 +157,18 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
     if(task.parentId||parent.parentId||task.id===parent.id||task.subTaskIds?.length||task.repeatCfgId||task.issueId||task.issueProviderId||task.issueType||task.dueWithTime||task.reminderId||task.remindAt)throw new Error('INVALID_TASK_HIERARCHY');
     action={type:'[Task Shared] convertToSubTask',taskId,targetParentId:parentId,afterTaskId:input.afterTaskId??null};
    }
+  }else if(input.kind==='time'||input.kind==='estimate'){
+   taskId=input.id!;
+   if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
+   if(input.kind==='time'){
+    if(!Number.isInteger(input.duration)||input.duration!<1||input.duration!>MAX_TRACKED_MS)throw new Error('WRITE_VALIDATION_FAILED');
+    const day=input.day??dateContext(official,p.state,now).today;
+    if(!validDay(day))throw new Error('WRITE_VALIDATION_FAILED');
+    action={type:'[TimeTracking] Sync time spent',taskId,date:day,duration:input.duration};
+   }else{
+    if(!Number.isInteger(input.timeEstimate)||input.timeEstimate!<0||input.timeEstimate!>MAX_TRACKED_MS)throw new Error('WRITE_VALIDATION_FAILED');
+    action={type:'[Task Shared] updateTask',task:{id:taskId,changes:{timeEstimate:input.timeEstimate}},isIgnoreShortSyntax:true};
+   }
   }else{
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId))throw new Error('TASK_NOT_FOUND');
@@ -224,6 +237,23 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    const parentId=input.parentId!;
    const child=predicted.tasks.entities[taskId];
    if(child.parentId!==parentId||child.projectId!==predicted.tasks.entities[parentId].projectId||!predicted.tasks.entities[parentId].subTaskIds.includes(taskId)||predicted.projects.entities[child.projectId]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+  }
+  if(input.kind==='time'){
+   const before=p.state.tasks.entities[taskId],after=predicted.tasks.entities[taskId];
+   const spent=(value:any)=>Number(value?.timeSpentOnDay?.[action.date]??0);
+   if(spent(after)!==spent(before)+action.duration||after.timeSpent!==(before.timeSpent??0)+action.duration)throw new Error('WRITE_VALIDATION_FAILED');
+   if(before.parentId){
+    const parentBefore=p.state.tasks.entities[before.parentId],parentAfter=predicted.tasks.entities[before.parentId];
+    if(!parentAfter||spent(parentAfter)!==spent(parentBefore)+action.duration||parentAfter.timeSpent!==(parentBefore.timeSpent??0)+action.duration)throw new Error('WRITE_VALIDATION_FAILED');
+   }
+  }else if(input.kind==='estimate'){
+   if(predicted.tasks.entities[taskId].timeEstimate!==input.timeEstimate)throw new Error('WRITE_VALIDATION_FAILED');
+   const parentId=p.state.tasks.entities[taskId].parentId;
+   if(parentId){
+    const parent=predicted.tasks.entities[parentId];
+    const sum=(parent?.subTaskIds??[]).reduce((total:number,id:string)=>{const child=predicted.tasks.entities[id];return total+(child?.isDone?0:Math.max(0,(child?.timeEstimate??0)-(child?.timeSpent??0)));},0);
+    if(!parent||parent.timeEstimate!==sum)throw new Error('WRITE_VALIDATION_FAILED');
+   }
   }
   if(input.kind==='create'&&input.parentId!==undefined){
    validateParent(predicted,input.parentId,input.projectId!);
