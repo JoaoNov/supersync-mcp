@@ -18,12 +18,12 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Delete | delete_task |
 | Archive | archive_done_tasks |
 | Time | log_task_time / set_task_estimate |
-| Tags | update_task_tags |
+| Tags | update_task_tags / create_tag / rename_tag |
 | Standard Kanban | set_task_kanban_status |
 | Projects | create_project / move_task |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 28 tools. With writes off, only the 10 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 30 tools. With writes off, only the 10 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - `search_tasks` filters active tasks and, when asked, archived tasks. It matches title and notes, one project, one tag, a due-day range, and done state. TODAY follows the due day and is not a tag filter.
 - `list_today` returns tasks due or scheduled today, undone overdue tasks, and undone overdue deadlines. The day is Europe/Brussels unless `TZ` is set, and it follows the account start-of-next-day offset. Archived tasks and tasks in archived projects are omitted.
@@ -126,7 +126,7 @@ Tests use public fixtures and fake HTTP. They do not need personal credentials. 
 
 ## Scope
 
-Create and update cover [schedules and deadlines](docs/TASK-DATES.md), [standard reminders](docs/TASK-REMINDERS.md), and [subtasks](docs/TASK-SUBTASKS.md). `create_subtask` is the same Add SubTask write as `create_task` with `parentId`. `reorder_subtask` sends the official move-up, move-down, move-to-top, or move-to-bottom action. `detach_subtask` sends `convertToMainTask`. `attach_task` sends `convertToSubTask` and refuses a task that already has subtasks, an issue, a repeat config, a due time, or a reminder. `get_task_time` returns time spent, the estimate, and the per-day worklog. `log_task_time` sends `[TimeTracking] Sync time spent`, which other devices add to that day. The day defaults to logical today in `TZ` (default `Europe/Brussels`), including the start-of-next-day offset. `set_task_estimate` sends `updateTask` with `timeEstimate`. Calendar days use `TZ`, default `Europe/Brussels`. Whether a reminder is shown depends on the Super Productivity app that syncs this account and on that device's notification permission.
+Create and update cover [schedules and deadlines](docs/TASK-DATES.md), [standard reminders](docs/TASK-REMINDERS.md), and [subtasks](docs/TASK-SUBTASKS.md). `create_subtask` is the same Add SubTask write as `create_task` with `parentId`. `reorder_subtask` sends the official move-up, move-down, move-to-top, or move-to-bottom action. `detach_subtask` sends `convertToMainTask`. `attach_task` sends `convertToSubTask` and refuses a task that already has subtasks, an issue, a repeat config, a due time, or a reminder. `get_task_time` returns time spent, the estimate, and the per-day worklog. `log_task_time` sends `[TimeTracking] Sync time spent`, which other devices add to that day. The day defaults to logical today in `TZ` (default `Europe/Brussels`), including the start-of-next-day offset. `set_task_estimate` sends `updateTask` with `timeEstimate`. `create_tag` sends `[Tag] Add Tag` using the app's default tag, with a fixed default color instead of a random one. `rename_tag` sends `[Tag] Update Tag` and does not change which tasks use the tag. TODAY cannot be created or renamed. Calendar days use `TZ`, default `Europe/Brussels`. Whether a reminder is shown depends on the Super Productivity app that syncs this account and on that device's notification permission.
 
 The adapter targets the Super Productivity revision in [upstream.json](upstream.json) and schema version 4. It does not promise compatibility with other versions or every official operation.
 

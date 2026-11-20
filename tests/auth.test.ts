@@ -109,7 +109,7 @@ test('write tools are callable only when the opt-in flag is set',async()=>{
   assert.equal((await post(live.port,initialize,{Authorization:'Bearer '+KEY})).status,200);
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,28);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('delete_task'),true);assert.equal(names.includes('archive_done_tasks'),true);assert.equal(names.includes('move_task'),true);
+  assert.equal(names.length,30);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('delete_task'),true);assert.equal(names.includes('archive_done_tasks'),true);assert.equal(names.includes('move_task'),true);
   assert.equal(names.includes('create_task'),true);
   assert.equal(names.includes('create_subtask'),true);
   assert.equal(names.includes('reorder_subtask'),true);
@@ -118,6 +118,8 @@ test('write tools are callable only when the opt-in flag is set',async()=>{
   assert.equal(names.includes('get_task_time'),true);
   assert.equal(names.includes('log_task_time'),true);
   assert.equal(names.includes('set_task_estimate'),true);
+  assert.equal(names.includes('create_tag'),true);
+  assert.equal(names.includes('rename_tag'),true);
   await post(live.port,{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'create_task',arguments:{requestId:'req-1',expectedServerSeq:0,projectId:'p',title:'hello'}}},{Authorization:'Bearer '+KEY});
   assert.equal(live.writes(),1);
  }finally{live.close();}
