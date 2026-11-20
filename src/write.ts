@@ -8,7 +8,11 @@ import {openAccountStore,type Account} from './accounts.js';
 import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
 import {dateActions,dateContext,dateState,hasDates,validateDates,type DateInput} from './dates.js';
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number};
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'create_tag'|'rename_tag';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number};
+function tagTitle(state:any,title:string|undefined,ignoreId?:string){
+ if(!title?.trim()||title!==title.trim()||title.length>200||/[\x00-\x1f]/.test(title)||title.toLowerCase()==='today')throw new Error('WRITE_VALIDATION_FAILED');
+ if(Object.values(state.tag.entities).some((tag:any)=>tag&&tag.id!==ignoreId&&tag.title===title))throw new Error('TAG_NAME_ALREADY_EXISTS');
+}
 // Each account bridge serves only its linked account. Only its active, top-level tasks
 // may be parents; archived/foreign IDs and malformed existing hierarchies fail closed.
 export function validateParent(state:any,parentId:string,projectId:string){
@@ -84,6 +88,20 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    taskId=randomUUID();
    const task={...structuredClone(official.DEFAULT_TASK),id:taskId,created:now,title:input.title,notes:input.notes??'',projectId:input.projectId,...(input.parentId!==undefined?{parentId:input.parentId}:{})};
    action=input.parentId!==undefined?{type:'[Task] Add SubTask',task,parentId:input.parentId,isIgnoreShortSyntax:true}:{type:'[Task Shared] addTask',task,workContextId:input.projectId,workContextType:'PROJECT',isAddToBottom:true,isAddToBacklog:false,isIgnoreShortSyntax:true};
+  }else if(input.kind==='create_tag'||input.kind==='rename_tag'){
+   tagTitle(p.state,input.title,input.kind==='rename_tag'?input.id:undefined);
+   const color=input.color??'#a05db1';
+   if(input.color!==undefined&&!/^#[0-9a-fA-F]{6}$/.test(color))throw new Error('WRITE_VALIDATION_FAILED');
+   if(input.kind==='create_tag'){
+    taskId=randomUUID();
+    action={type:'[Tag] Add Tag',tag:{...structuredClone(official.DEFAULT_TAG),id:taskId,title:input.title,created:now,icon:null,taskIds:[],color,theme:{...official.DEFAULT_TAG.theme,primary:color}}};
+   }else{
+    taskId=input.id!;
+    const tag=taskId&&Object.hasOwn(p.state.tag.entities,taskId)?p.state.tag.entities[taskId]:undefined;
+    if(!tag)throw new Error('TAG_NOT_FOUND');
+    if(taskId==='TODAY'||tag.title===input.title)throw new Error('WRITE_VALIDATION_FAILED');
+    action={type:'[Tag] Update Tag',tag:{id:taskId,changes:{title:input.title}}};
+   }
   }else{
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId))throw new Error('TASK_NOT_FOUND');
@@ -122,8 +140,11 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    if(a.type==='[Task Shared] setDeadline'&&before?.remindAt!=null&&predicted.tasks.entities[taskId]?.remindAt!==before.remindAt)throw new Error('REMINDER_SCHEDULE_CONFLICT');
   }
   const isBoard=input.kind==='create_board'||input.kind==='update_board';
-  const created=isBoard?predicted.boards.boardCfgs.some((b:any)=>b.id===taskId):(input.kind==='create_project'?predicted.projects:predicted.tasks).entities[taskId];
+  const isTag=input.kind==='create_tag'||input.kind==='rename_tag';
+  const created=isBoard?predicted.boards.boardCfgs.some((b:any)=>b.id===taskId):(input.kind==='create_project'?predicted.projects:isTag?predicted.tag:predicted.tasks).entities[taskId];
   if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  if(input.kind==='create_tag'&&(created.title!==input.title||created.taskIds?.length||!predicted.menuTree?.tagTree?.some((item:any)=>item.id===taskId&&item.k==='t')))throw new Error('WRITE_VALIDATION_FAILED');
+  if(input.kind==='rename_tag'&&(created.title!==input.title||JSON.stringify(created.taskIds)!==JSON.stringify(p.state.tag.entities[taskId].taskIds)||created.color!==p.state.tag.entities[taskId].color))throw new Error('WRITE_VALIDATION_FAILED');
   if(input.kind==='create'&&input.parentId!==undefined){
    validateParent(predicted,input.parentId,input.projectId!);
    if(created.parentId!==input.parentId||created.projectId!==input.projectId||predicted.tasks.entities[input.parentId].subTaskIds.filter((id:string)=>id===taskId).length!==1)throw new Error('WRITE_VALIDATION_FAILED');
@@ -138,7 +159,7 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   // Known limitation: entityIds is not set. Official clients attach that list on
   // multi-entity operations so SuperSync can report conflict metadata. This path
   // sends entityId only and does not invent the missing list.
-  const op={id:official.uuidv7(),clientId,actionType:type,opType:index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':'TASK',entityId:taskId,payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
+  const op={id:official.uuidv7(),clientId,actionType:type,opType:index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':isTag?'TAG':'TASK',entityId:taskId,payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
   ops.push(op);
   }
   const body=JSON.stringify(SuperSyncUploadOpsRequestSchema.parse({ops,clientId,lastKnownServerSeq:p.serverSeq,requestId:input.requestId}));

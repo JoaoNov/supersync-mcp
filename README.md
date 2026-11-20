@@ -15,12 +15,12 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Boards | get_board |
 | Create and edit | create_task / update_task |
 | Done and reopen | complete_task / reopen_task |
-| Tags | update_task_tags |
+| Tags | update_task_tags / create_tag / rename_tag |
 | Standard Kanban | set_task_kanban_status |
 | Projects | create_project |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 16 tools. With writes off, only the 7 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 18 tools. With writes off, only the 7 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - Tag updates keep tags that are not named. TODAY follows the due day and is not a normal tag.
 - Standard Kanban accepts `todo`, `in_progress`, and `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
@@ -118,7 +118,7 @@ Tests use public fixtures and fake HTTP. They do not need personal credentials. 
 
 ## Scope
 
-Create and update cover [schedules and deadlines](docs/TASK-DATES.md), [standard reminders](docs/TASK-REMINDERS.md), and [subtasks](docs/TASK-SUBTASKS.md). Calendar days use `TZ`, default `Europe/Brussels`. Whether a reminder is shown depends on the Super Productivity app that syncs this account and on that device's notification permission.
+Create and update cover [schedules and deadlines](docs/TASK-DATES.md), [standard reminders](docs/TASK-REMINDERS.md), and [subtasks](docs/TASK-SUBTASKS.md). `create_tag` sends `[Tag] Add Tag` using the app's default tag, with a fixed default color instead of a random one. `rename_tag` sends `[Tag] Update Tag` and does not change which tasks use the tag. TODAY cannot be created or renamed. Calendar days use `TZ`, default `Europe/Brussels`. Whether a reminder is shown depends on the Super Productivity app that syncs this account and on that device's notification permission.
 
 The adapter targets the Super Productivity revision in [upstream.json](upstream.json) and schema version 4. It does not promise compatibility with other versions or every official operation.
 
