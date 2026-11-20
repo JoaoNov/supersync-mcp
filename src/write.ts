@@ -7,8 +7,14 @@ import {current,invalidate,createSync} from './sync.js';
 import {openAccountStore,type Account} from './accounts.js';
 import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
-import {dateActions,dateContext,dateState,hasDates,validateDates,type DateInput} from './dates.js';
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number};
+import {dateActions,dateContext,dateState,hasDates,validDay,validateDates,type DateInput} from './dates.js';
+import {applyArchive} from './archive.js';
+const MAX_TRACKED_MS=1000*60*60*1000;
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'estimate'|'create_tag'|'rename_tag';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string};
+function tagTitle(state:any,title:string|undefined,ignoreId?:string){
+ if(!title?.trim()||title!==title.trim()||title.length>200||/[\x00-\x1f]/.test(title)||title.toLowerCase()==='today')throw new Error('WRITE_VALIDATION_FAILED');
+ if(Object.values(state.tag.entities).some((tag:any)=>tag&&tag.id!==ignoreId&&tag.title===title))throw new Error('TAG_NAME_ALREADY_EXISTS');
+}
 // Each account bridge serves only its linked account. Only its active, top-level tasks
 // may be parents; archived/foreign IDs and malformed existing hierarchies fail closed.
 export function validateParent(state:any,parentId:string,projectId:string){
@@ -69,7 +75,7 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   if(existing){if(existing.fingerprint!==fingerprint)throw new Error('IDEMPOTENCY_KEY_REUSED');return await submit(db,input.requestId,cfg,deps.send,onInvalidate);}
   if(db.prepare("SELECT 1 FROM outbox WHERE status='pending'").get())throw new Error('WRITE_PENDING_RETRY_SAME_REQUEST');
   if(input.expectedServerSeq!==p.serverSeq)throw new Error('STALE_REVISION_READ_AGAIN');
-  const official=await deps.officialModule();const now=Date.now();let taskId:string,action:any;
+  const official=await deps.officialModule();const now=Date.now();let taskId:string,action:any,bulkIds:string[]|undefined;
   if(input.kind==='update_board'){
    taskId=input.id!;
    const {requestId,expectedServerSeq,kind,...value}=input;action=boardUpdateAction(p.state,value);
@@ -84,6 +90,103 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    taskId=randomUUID();
    const task={...structuredClone(official.DEFAULT_TASK),id:taskId,created:now,title:input.title,notes:input.notes??'',projectId:input.projectId,...(input.parentId!==undefined?{parentId:input.parentId}:{})};
    action=input.parentId!==undefined?{type:'[Task] Add SubTask',task,parentId:input.parentId,isIgnoreShortSyntax:true}:{type:'[Task Shared] addTask',task,workContextId:input.projectId,workContextType:'PROJECT',isAddToBottom:true,isAddToBacklog:false,isIgnoreShortSyntax:true};
+  }else if(input.kind==='delete'){
+   if(input.confirm!==true)throw new Error('WRITE_VALIDATION_FAILED');
+   taskId=input.id!;
+   if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
+   const task=p.state.tasks.entities[taskId];
+   const subTaskIds=Array.isArray(task.subTaskIds)?task.subTaskIds:[];
+   const subTasks=subTaskIds.map((id:string)=>{
+    const child=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:undefined;
+    if(!child||child.id!==id||child.parentId!==taskId)throw new Error('INVALID_TASK_HIERARCHY');
+    return structuredClone(child);
+   });
+   action={type:'[Task Shared] deleteTask',task:{...structuredClone(task),subTasks}};
+  }else if(input.kind==='move'){
+   taskId=input.id!;
+   const target=input.targetProjectId;
+   if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
+   if(!target||!Object.hasOwn(p.state.projects.entities,target)||!p.state.projects.entities[target])throw new Error('PROJECT_NOT_FOUND');
+   const task=p.state.tasks.entities[taskId];
+   if(task.parentId)throw new Error('INVALID_TASK_HIERARCHY');
+   if(task.projectId===target)throw new Error('WRITE_VALIDATION_FAILED');
+   const subTaskIds=Array.isArray(task.subTaskIds)?task.subTaskIds:[];
+   const subTasks=subTaskIds.map((id:string)=>{
+    const child=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:undefined;
+    if(!child||child.id!==id||child.parentId!==taskId)throw new Error('INVALID_TASK_HIERARCHY');
+    return structuredClone(child);
+   });
+   action={type:'[Task Shared] moveToOtherProject',task:{...structuredClone(task),subTasks},targetProjectId:target};
+  }else if(input.kind==='archive'){
+   if(input.confirm!==true)throw new Error('WRITE_VALIDATION_FAILED');
+   const entities=p.state.tasks.entities;
+   const parents=(p.state.tasks.ids as string[]).filter(id=>Object.hasOwn(entities,id)&&entities[id]&&!entities[id].parentId&&entities[id].isDone===true).map(id=>entities[id]);
+   if(!parents.length)throw new Error('ARCHIVE_EMPTY');
+   const tasks=parents.map(parent=>{
+    const subTaskIds=Array.isArray(parent.subTaskIds)?parent.subTaskIds:[];
+    const subTasks=subTaskIds.map((id:string)=>{
+     const child=Object.hasOwn(entities,id)?entities[id]:undefined;
+     if(!child||child.id!==id||child.parentId!==parent.id)throw new Error('INVALID_TASK_HIERARCHY');
+     return structuredClone(child);
+    });
+    return {...structuredClone(parent),subTasks};
+   });
+   bulkIds=[];
+   const seen=new Set<string>();
+   for(const task of tasks)for(const id of [task.id,...(task.subTaskIds??[]),...task.subTasks.map((sub:any)=>sub.id)])if(typeof id==='string'&&id&&!seen.has(id)){seen.add(id);bulkIds.push(id);}
+   if(bulkIds.length>1000)throw new Error('WRITE_VALIDATION_FAILED');
+   taskId=bulkIds[0];
+   action={type:'[Task Shared] moveToArchive',tasks};
+  }else if(input.kind==='reorder'||input.kind==='detach'||input.kind==='attach'){
+   taskId=input.id!;
+   const entities=p.state.tasks.entities;
+   if(!taskId||!Object.hasOwn(entities,taskId)||!entities[taskId])throw new Error('TASK_NOT_FOUND');
+   const task=entities[taskId];
+   if(input.kind==='reorder'){
+    if(!task.parentId||!Object.hasOwn(entities,task.parentId))throw new Error('INVALID_TASK_HIERARCHY');
+    const order=entities[task.parentId].subTaskIds??[];
+    const index=order.indexOf(taskId);
+    if(index<0)throw new Error('INVALID_TASK_HIERARCHY');
+    if((input.direction==='up'||input.direction==='top')&&index===0||(input.direction==='down'||input.direction==='bottom')&&index===order.length-1)throw new Error('WRITE_VALIDATION_FAILED');
+    const type=input.direction==='up'?'[Task] Move up':input.direction==='down'?'[Task] Move down':input.direction==='top'?'[Task] Move to top':input.direction==='bottom'?'[Task] Move to bottom':undefined;
+    if(!type)throw new Error('WRITE_VALIDATION_FAILED');
+    action={type,id:taskId,parentId:task.parentId};
+   }else if(input.kind==='detach'){
+    if(!task.parentId||!Object.hasOwn(entities,task.parentId)||entities[task.parentId].parentId)throw new Error('INVALID_TASK_HIERARCHY');
+    action={type:'[Task Shared] convertToMainTask',task:structuredClone(task),parentTagIds:structuredClone(entities[task.parentId].tagIds??[]),isPlanForToday:false,today:dateContext(official,p.state,now).today,modified:now};
+   }else{
+    const parentId=input.parentId;
+    if(!parentId||!Object.hasOwn(entities,parentId)||!entities[parentId])throw new Error('TASK_NOT_FOUND');
+    const parent=entities[parentId];
+    if(task.parentId||parent.parentId||task.id===parent.id||task.subTaskIds?.length||task.repeatCfgId||task.issueId||task.issueProviderId||task.issueType||task.dueWithTime||task.reminderId||task.remindAt)throw new Error('INVALID_TASK_HIERARCHY');
+    action={type:'[Task Shared] convertToSubTask',taskId,targetParentId:parentId,afterTaskId:input.afterTaskId??null};
+   }
+  }else if(input.kind==='time'||input.kind==='estimate'){
+   taskId=input.id!;
+   if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
+   if(input.kind==='time'){
+    if(!Number.isInteger(input.duration)||input.duration!<1||input.duration!>MAX_TRACKED_MS)throw new Error('WRITE_VALIDATION_FAILED');
+    const day=input.day??dateContext(official,p.state,now).today;
+    if(!validDay(day))throw new Error('WRITE_VALIDATION_FAILED');
+    action={type:'[TimeTracking] Sync time spent',taskId,date:day,duration:input.duration};
+   }else{
+    if(!Number.isInteger(input.timeEstimate)||input.timeEstimate!<0||input.timeEstimate!>MAX_TRACKED_MS)throw new Error('WRITE_VALIDATION_FAILED');
+    action={type:'[Task Shared] updateTask',task:{id:taskId,changes:{timeEstimate:input.timeEstimate}},isIgnoreShortSyntax:true};
+   }
+  }else if(input.kind==='create_tag'||input.kind==='rename_tag'){
+   tagTitle(p.state,input.title,input.kind==='rename_tag'?input.id:undefined);
+   const color=input.color??'#a05db1';
+   if(input.color!==undefined&&!/^#[0-9a-fA-F]{6}$/.test(color))throw new Error('WRITE_VALIDATION_FAILED');
+   if(input.kind==='create_tag'){
+    taskId=randomUUID();
+    action={type:'[Tag] Add Tag',tag:{...structuredClone(official.DEFAULT_TAG),id:taskId,title:input.title,created:now,icon:null,taskIds:[],color,theme:{...official.DEFAULT_TAG.theme,primary:color}}};
+   }else{
+    taskId=input.id!;
+    const tag=taskId&&Object.hasOwn(p.state.tag.entities,taskId)?p.state.tag.entities[taskId]:undefined;
+    if(!tag)throw new Error('TAG_NOT_FOUND');
+    if(taskId==='TODAY'||tag.title===input.title)throw new Error('WRITE_VALIDATION_FAILED');
+    action={type:'[Tag] Update Tag',tag:{id:taskId,changes:{title:input.title}}};
+   }
   }else{
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId))throw new Error('TASK_NOT_FOUND');
@@ -122,8 +225,57 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    if(a.type==='[Task Shared] setDeadline'&&before?.remindAt!=null&&predicted.tasks.entities[taskId]?.remindAt!==before.remindAt)throw new Error('REMINDER_SCHEDULE_CONFLICT');
   }
   const isBoard=input.kind==='create_board'||input.kind==='update_board';
-  const created=isBoard?predicted.boards.boardCfgs.some((b:any)=>b.id===taskId):(input.kind==='create_project'?predicted.projects:predicted.tasks).entities[taskId];
-  if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  const isTag=input.kind==='create_tag'||input.kind==='rename_tag';
+  const created=isBoard?predicted.boards.boardCfgs.some((b:any)=>b.id===taskId):(input.kind==='create_project'?predicted.projects:isTag?predicted.tag:predicted.tasks).entities[taskId];
+  if(input.kind==='delete'){
+   const gone=[taskId,...(action.task.subTaskIds??[])];
+   if(gone.some((id:string)=>predicted.tasks.entities[id]))throw new Error('WRITE_VALIDATION_FAILED');
+   for(const project of Object.values(predicted.projects.entities) as any[])if(gone.some((id:string)=>project?.taskIds?.includes(id)||project?.backlogTaskIds?.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+   for(const tag of Object.values(predicted.tag.entities) as any[])if(gone.some((id:string)=>tag?.taskIds?.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(input.kind==='archive'){
+   const archived=applyArchive(predicted,action,now,official);
+   predicted={...predicted,...archived};
+   if(!bulkIds?.every(id=>!predicted.tasks.entities[id]&&predicted.archiveYoung.task.entities[id]?.isDone===true&&predicted.archiveYoung.task.entities[id].dueDay===undefined&&predicted.archiveYoung.task.entities[id].dueWithTime===undefined))throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  if(input.kind==='move'){
+   const target=input.targetProjectId!;
+   const ids=[taskId,...(action.task.subTaskIds??[])];
+   if(ids.some((id:string)=>predicted.tasks.entities[id]?.projectId!==target))throw new Error('WRITE_VALIDATION_FAILED');
+   if(!predicted.projects.entities[target]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+   if((action.task.subTaskIds??[]).some((id:string)=>predicted.projects.entities[target].taskIds.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+   if(predicted.projects.entities[p.state.tasks.entities[taskId].projectId]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+  }
+  if(input.kind==='reorder'){
+   const before=p.state.tasks.entities[p.state.tasks.entities[taskId].parentId].subTaskIds;
+   const after=predicted.tasks.entities[action.parentId].subTaskIds;
+   if(!after.includes(taskId)||after.join()===before.join())throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(input.kind==='detach'){
+   const parentId=p.state.tasks.entities[taskId].parentId;
+   if(predicted.tasks.entities[taskId].parentId||predicted.tasks.entities[parentId].subTaskIds.includes(taskId)||!predicted.projects.entities[predicted.tasks.entities[taskId].projectId]?.taskIds.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(input.kind==='attach'){
+   const parentId=input.parentId!;
+   const child=predicted.tasks.entities[taskId];
+   if(child.parentId!==parentId||child.projectId!==predicted.tasks.entities[parentId].projectId||!predicted.tasks.entities[parentId].subTaskIds.includes(taskId)||predicted.projects.entities[child.projectId]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
+  }
+  if(input.kind==='time'){
+   const before=p.state.tasks.entities[taskId],after=predicted.tasks.entities[taskId];
+   const spent=(value:any)=>Number(value?.timeSpentOnDay?.[action.date]??0);
+   if(spent(after)!==spent(before)+action.duration||after.timeSpent!==(before.timeSpent??0)+action.duration)throw new Error('WRITE_VALIDATION_FAILED');
+   if(before.parentId){
+    const parentBefore=p.state.tasks.entities[before.parentId],parentAfter=predicted.tasks.entities[before.parentId];
+    if(!parentAfter||spent(parentAfter)!==spent(parentBefore)+action.duration||parentAfter.timeSpent!==(parentBefore.timeSpent??0)+action.duration)throw new Error('WRITE_VALIDATION_FAILED');
+   }
+  }else if(input.kind==='estimate'){
+   if(predicted.tasks.entities[taskId].timeEstimate!==input.timeEstimate)throw new Error('WRITE_VALIDATION_FAILED');
+   const parentId=p.state.tasks.entities[taskId].parentId;
+   if(parentId){
+    const parent=predicted.tasks.entities[parentId];
+    const sum=(parent?.subTaskIds??[]).reduce((total:number,id:string)=>{const child=predicted.tasks.entities[id];return total+(child?.isDone?0:Math.max(0,(child?.timeEstimate??0)-(child?.timeSpent??0)));},0);
+    if(!parent||parent.timeEstimate!==sum)throw new Error('WRITE_VALIDATION_FAILED');
+   }
+  }
+  if(input.kind==='create_tag'&&(created.title!==input.title||created.taskIds?.length||!predicted.menuTree?.tagTree?.some((item:any)=>item.id===taskId&&item.k==='t')))throw new Error('WRITE_VALIDATION_FAILED');
+  if(input.kind==='rename_tag'&&(created.title!==input.title||JSON.stringify(created.taskIds)!==JSON.stringify(p.state.tag.entities[taskId].taskIds)||created.color!==p.state.tag.entities[taskId].color))throw new Error('WRITE_VALIDATION_FAILED');
   if(input.kind==='create'&&input.parentId!==undefined){
    validateParent(predicted,input.parentId,input.projectId!);
    if(created.parentId!==input.parentId||created.projectId!==input.projectId||predicted.tasks.entities[input.parentId].subTaskIds.filter((id:string)=>id===taskId).length!==1)throw new Error('WRITE_VALIDATION_FAILED');
@@ -138,7 +290,10 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   // Known limitation: entityIds is not set. Official clients attach that list on
   // multi-entity operations so SuperSync can report conflict metadata. This path
   // sends entityId only and does not invent the missing list.
-  const op={id:official.uuidv7(),clientId,actionType:type,opType:index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':'TASK',entityId:taskId,payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
+  // Archive is the official bulk moveToArchive op: entityIds lists every parent
+  // and cascaded subtask so a concurrent subtask edit cannot resurrect it.
+  // Other writes still send entityId only.
+  const op={id:official.uuidv7(),clientId,actionType:type,opType:input.kind==='delete'?'DEL':input.kind==='reorder'?'MOV':index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':isTag?'TAG':'TASK',entityId:taskId,...(input.kind==='archive'?{entityIds:bulkIds}:{}),payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
   ops.push(op);
   }
   const body=JSON.stringify(SuperSyncUploadOpsRequestSchema.parse({ops,clientId,lastKnownServerSeq:p.serverSeq,requestId:input.requestId}));
@@ -148,7 +303,8 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    db.prepare("INSERT INTO outbox(requestId,fingerprint,body,taskId,status) VALUES(?,?,?,?,'pending')").run(input.requestId,fingerprint,body,taskId);
    db.exec('COMMIT');
   }catch(e){db.exec('ROLLBACK');throw e;}
-  return await submit(db,input.requestId,cfg,deps.send,onInvalidate);
+  const submitted=await submit(db,input.requestId,cfg,deps.send,onInvalidate);
+  return bulkIds?{...submitted,archivedTaskIds:bulkIds}:submitted;
  }finally{db.close();}
 }
 
