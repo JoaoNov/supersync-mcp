@@ -8,7 +8,7 @@ import {openAccountStore,type Account} from './accounts.js';
 import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
 import {dateActions,dateContext,dateState,hasDates,validateDates,type DateInput} from './dates.js';
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number};
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean};
 // Each account bridge serves only its linked account. Only its active, top-level tasks
 // may be parents; archived/foreign IDs and malformed existing hierarchies fail closed.
 export function validateParent(state:any,parentId:string,projectId:string){
@@ -84,6 +84,18 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    taskId=randomUUID();
    const task={...structuredClone(official.DEFAULT_TASK),id:taskId,created:now,title:input.title,notes:input.notes??'',projectId:input.projectId,...(input.parentId!==undefined?{parentId:input.parentId}:{})};
    action=input.parentId!==undefined?{type:'[Task] Add SubTask',task,parentId:input.parentId,isIgnoreShortSyntax:true}:{type:'[Task Shared] addTask',task,workContextId:input.projectId,workContextType:'PROJECT',isAddToBottom:true,isAddToBacklog:false,isIgnoreShortSyntax:true};
+  }else if(input.kind==='delete'){
+   if(input.confirm!==true)throw new Error('WRITE_VALIDATION_FAILED');
+   taskId=input.id!;
+   if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
+   const task=p.state.tasks.entities[taskId];
+   const subTaskIds=Array.isArray(task.subTaskIds)?task.subTaskIds:[];
+   const subTasks=subTaskIds.map((id:string)=>{
+    const child=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:undefined;
+    if(!child||child.id!==id||child.parentId!==taskId)throw new Error('INVALID_TASK_HIERARCHY');
+    return structuredClone(child);
+   });
+   action={type:'[Task Shared] deleteTask',task:{...structuredClone(task),subTasks}};
   }else{
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId))throw new Error('TASK_NOT_FOUND');
@@ -123,7 +135,12 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   }
   const isBoard=input.kind==='create_board'||input.kind==='update_board';
   const created=isBoard?predicted.boards.boardCfgs.some((b:any)=>b.id===taskId):(input.kind==='create_project'?predicted.projects:predicted.tasks).entities[taskId];
-  if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  if(input.kind==='delete'){
+   const gone=[taskId,...(action.task.subTaskIds??[])];
+   if(gone.some((id:string)=>predicted.tasks.entities[id]))throw new Error('WRITE_VALIDATION_FAILED');
+   for(const project of Object.values(predicted.projects.entities) as any[])if(gone.some((id:string)=>project?.taskIds?.includes(id)||project?.backlogTaskIds?.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+   for(const tag of Object.values(predicted.tag.entities) as any[])if(gone.some((id:string)=>tag?.taskIds?.includes(id)))throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(!created)throw new Error('WRITE_VALIDATION_FAILED');
   if(input.kind==='create'&&input.parentId!==undefined){
    validateParent(predicted,input.parentId,input.projectId!);
    if(created.parentId!==input.parentId||created.projectId!==input.projectId||predicted.tasks.entities[input.parentId].subTaskIds.filter((id:string)=>id===taskId).length!==1)throw new Error('WRITE_VALIDATION_FAILED');
@@ -138,7 +155,7 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   // Known limitation: entityIds is not set. Official clients attach that list on
   // multi-entity operations so SuperSync can report conflict metadata. This path
   // sends entityId only and does not invent the missing list.
-  const op={id:official.uuidv7(),clientId,actionType:type,opType:index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':'TASK',entityId:taskId,payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
+  const op={id:official.uuidv7(),clientId,actionType:type,opType:input.kind==='delete'?'DEL':index===0&&input.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':isBoard?'BOARD':input.kind==='create_project'?'PROJECT':'TASK',entityId:taskId,payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+index},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION};
   ops.push(op);
   }
   const body=JSON.stringify(SuperSyncUploadOpsRequestSchema.parse({ops,clientId,lastKnownServerSeq:p.serverSeq,requestId:input.requestId}));
