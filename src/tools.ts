@@ -1,4 +1,6 @@
 import {publicReminder,reminderOutput} from './reminders.js';
+import {searchTasks} from './search.js';
+import {officialModule} from './projection.js';
 import {dateSchema,hasDates,validateDates} from './dates.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';import {boardOutput,columnSchema,columnPatchSchema,publicBoard} from './boards.js';import {writeTask} from './write.js';import {current} from './sync.js';
@@ -27,7 +29,7 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
   return {content:[{type:'text' as const,text}],structuredContent:JSON.parse(text) as Record<string,unknown>};
  };
  const error=(e:unknown)=>{
-  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT']);
+  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT','SEARCH_VALIDATION_FAILED']);
   const code=e instanceof Error&&known.has(e.message)?e.message:'SYNC_FAILED';
   console.warn(JSON.stringify({event:'sync_failed',reason:code}));
   return {isError:true,content:[{type:'text' as const,text:'Could not complete the operation. Diagnostic code: '+code}]};
@@ -40,6 +42,10 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
    try{const p=await provider();const archivedEntities={...p.state.archiveOld?.task?.entities,...p.state.archiveYoung?.task?.entities};const model=key==='archives'?{ids:Object.keys(archivedEntities).sort(),entities:archivedEntities}:p.state[key];const ids=model.ids.slice(offset,offset+limit);return output({serverSeq:p.serverSeq,total:model.ids.length,items:ids.map((id:string)=>['tasks','archives'].includes(key)?publicTask(model.entities[id]):selectFields(model.entities[id],['id','title','color','isArchived']))});}catch(e){return error(e);}
   });
  }
+ const day=z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+ mcp.registerTool('search_tasks',{description:'Filter active tasks by title or notes, project, tag, due-day range, and done state. Archived tasks are excluded unless includeArchived is true. Due days use the configured timezone (default Europe/Brussels), including the account start-of-next-day offset. TODAY is not a tag; a task due today is matched by its due day. Results are paginated in task-list order, then archive order.',inputSchema:{...pageSchema,text:z.string().max(200).optional(),projectId:z.string().min(1).max(255).optional(),tagId:z.string().min(1).max(255).optional(),dueFrom:day.optional(),dueTo:day.optional(),isDone:z.boolean().optional(),includeArchived:z.boolean().default(false)},outputSchema:{serverSeq:serverSeqOutput,total:z.number().int().min(0),items:z.array(taskOutput)},annotations},async args=>{
+  try{const p=await provider();const official=await officialModule();const {total,items}=searchTasks(p.state,args,official);return output({serverSeq:p.serverSeq,total,items:items.map(publicTask)});}catch(e){return error(e);}
+ });
  mcp.registerTool('get_task',{description:'Get a task by id. Archived tasks are included in the search.',inputSchema:{id:z.string().min(1).max(255)},outputSchema:{serverSeq:serverSeqOutput,task:taskOutput.nullable()},annotations},async({id})=>{
   try{const p=await provider();const task=Object.hasOwn(p.state.tasks.entities,id)?p.state.tasks.entities[id]:(p.state.archiveYoung?.task?.entities?.[id]??p.state.archiveOld?.task?.entities?.[id]??null);return output({serverSeq:p.serverSeq,task:task?publicTask(task):null});}catch(e){return error(e);}
  });

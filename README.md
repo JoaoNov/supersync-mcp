@@ -10,7 +10,7 @@ It is not part of the official Super Productivity project. It is a single-accoun
 
 | Kind | Tools |
 |---|---|
-| Status and lookup | get_sync_status / list_tasks / get_task |
+| Status and lookup | get_sync_status / list_tasks / search_tasks / get_task |
 | Lists | list_projects / list_tags / list_archived_tasks |
 | Boards | get_board |
 | Create and edit | create_task / update_task |
@@ -20,8 +20,9 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Projects | create_project |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 16 tools. With writes off, only the 7 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 17 tools. With writes off, only the 8 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
+- `search_tasks` filters active tasks and, when asked, archived tasks. It matches title and notes, one project, one tag, a due-day range, and done state. TODAY follows the due day and is not a tag filter.
 - Tag updates keep tags that are not named. TODAY follows the due day and is not a normal tag.
 - Standard Kanban accepts `todo`, `in_progress`, and `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
 - Task text updates change `title` and `notes`. Archive restore, delete, and card reordering are not provided.
