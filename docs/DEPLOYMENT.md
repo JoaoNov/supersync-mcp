@@ -9,3 +9,5 @@ The process listens on `LISTEN_HOST`:`PORT` inside the container (default `0.0.0
 `/healthz` is for the container healthcheck. Clients use `POST /mcp` with `Authorization: Bearer <key>`.
 
 An optional same-host proxy is sketched in [examples/nginx.conf](../examples/nginx.conf). The `Host` header it forwards must be listed in `ALLOWED_HOSTS`.
+
+To publish the loopback listener through a Cloudflare Tunnel, keep `MCP_BIND_ADDRESS=127.0.0.1`, add the public hostname (for example `mcp.example.com`) to `ALLOWED_HOSTS`, and send `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and `Authorization: Bearer <key>`. The steps are in the README. The Access service token does not replace the bearer key.
