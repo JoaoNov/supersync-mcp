@@ -8,11 +8,11 @@ One process serves one bearer key and one SuperSync account. Reads are available
 
 ## Tools
 
-Version 0.3.0 defines 32 tools. With writes off, only the 11 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 36 tools. With writes off, only the 13 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 | Kind | Tools |
 |---|---|
-| Status and lookup | `get_sync_status` / `list_tasks` / `search_tasks` / `list_today` / `get_task` / `get_task_time` / `time_by_day` |
+| Status and lookup | `get_sync_status` / `list_tasks` / `search_tasks` / `list_today` / `get_task` / `get_task_time` / `time_by_day` / `worklog_report` / `list_changes` |
 | Lists | `list_projects` / `list_tags` / `list_archived_tasks` |
 | Boards | `get_board` |
 | Create and edit | `create_task` / `create_subtask` / `update_task` / `reorder_subtask` / `detach_subtask` / `attach_task` |
@@ -20,6 +20,8 @@ Version 0.3.0 defines 32 tools. With writes off, only the 11 read tools are regi
 | Delete | `delete_task` |
 | Archive | `archive_done_tasks` |
 | Time | `log_task_time` / `set_task_time` / `set_task_estimate` |
+| Batch | `batch` |
+| Undo | `undo_change` |
 | Tags | `update_task_tags` / `create_tag` / `rename_tag` |
 | Standard Kanban | `set_task_kanban_status` |
 | Projects | `create_project` / `move_task` |
@@ -34,7 +36,9 @@ Read tools:
 - `get_task` returns one task, including an archived task. A missing id returns null.
 - `get_task_time` returns time spent, the estimate, and the per-day worklog for one active or archived task.
 - `time_by_day` returns tracked time for an inclusive `YYYY-MM-DD` range in one call. Omit both dates for the current Monday–Sunday week. Totals count leaf `timeSpentOnDay` only, including archived tasks, so a parent that also stores its subtasks' time is not added again. Day keys are the app's logical days and are not split again by hour. The default week uses the account `startOfNextDayTime` when that setting exists. When neither that field nor the legacy `startOfNextDay` hour is present, `DAY_START_HOUR` (default 4) ends the working day at 04:00 in `TZ`. An explicit account offset, including midnight or a value other than 4, wins over `DAY_START_HOUR`.
+- `worklog_report` uses that same range, boundary, and leaf selection. `groupBy` is any combination of `day`, `project`, and `task`; the default is all three. Every group has `totalMs` and `hours`, and the result has the same two fields for the whole range. Hours are rounded to two decimals from the milliseconds, so the sum of the rounded group hours can differ from the rounded grand total. A `day`-only report includes days with zero time. Other groupings list only groups that have time. Time logged after midnight and before the day boundary is already stored on the previous logical day. The report reads that key and does not split a stored day by clock hour.
 - `get_board` returns one board, its columns, and card order.
+- `list_changes` reads the append-only write log, newest first. It is available with writes off.
 
 Write tools, registered only when writes are on:
 
@@ -50,6 +54,8 @@ Write tools, registered only when writes are on:
 - `set_task_kanban_status` sets `todo`, `in_progress`, or `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
 - `create_project` adds a project. `move_task` moves a top-level task and its subtasks to another project.
 - `create_board` and `update_board` manage a board. A board has a name and 1 to 50 columns. `update_board` changes settings of existing columns and keeps column order, card placement, and task bodies.
+- `batch` runs 1 to 20 write operations, including `set_time`, in order and uploads them as one SuperSync request with one `expectedServerSeq` and one `requestId`. `idFrom`, `projectIdFrom`, `parentIdFrom`, `targetProjectIdFrom`, and `addTagIdsFrom` use the id created by an earlier operation in that batch. If `expectedServerSeq` is not the current sequence, nothing is uploaded. Every operation is replayed through the official reducers before the upload, and a failure in any of them uploads nothing. The batch is also rejected before upload when its operations contradict each other. `BATCH_CONFLICT` names the operations by index, kind, and requestId. That includes a later operation on a task deleted or archived earlier in the batch, moving one task to two projects, deleting a task completed earlier in the batch, a repeated operation `requestId`, and an id that is neither in the account nor produced by an earlier operation in the batch. An operation `requestId` is optional and must be unique inside the batch. The same batch `requestId` retries that same upload. SuperSync still decides each operation inside the request. If the server accepts some and rejects others, the call fails with `WRITE_PARTIALLY_ACCEPTED` and does not upload that request again. Read the account again and send a new request for whatever is still missing. A fully rejected upload leaves none of the batch on the server.
+- Every successful write, including `batch` and `undo_change`, appends one line to an append-only JSONL file. The default path is `data/changes/changes.jsonl`, set with `CHANGE_LOG_PATH`, and it must stay under `data/changes/`. Docker Compose mounts the named volume `changes` there so the file survives a new container. `CHANGE_LOG_MAX_BYTES` defaults to 1 MiB. When the next line would pass that cap, the current file is renamed to the same name with `.1` and a new file is started. The previous `.1` file is removed, so the log stays within about two caps. An entry stores the time, tool, `requestId`, `serverSeq` before and after the upload, and the before and after state of each affected task, project, tag, or board. It does not store the access key, the SuperSync token, or the encryption password. `undo_change` sends the inverse official sync actions for one entry id. Pass `expectedServerSeq` from a fresh read. If any affected entity no longer matches the logged after state, the call returns `UNDO_CONFLICT` and uploads nothing. A successful undo is appended as its own entry. Some writes, such as a board edit whose inverse the official reducers do not restore exactly, return `UNDO_UNSUPPORTED` and upload nothing. A rejected upload, including `WRITE_PARTIALLY_ACCEPTED`, is not logged, so undo cannot roll back a prefix the server already accepted. The log keeps the current file and one rotated file only.
 
 Dates, reminders, and subtasks are described in [docs/TASK-DATES.md](docs/TASK-DATES.md), [docs/TASK-REMINDERS.md](docs/TASK-REMINDERS.md), and [docs/TASK-SUBTASKS.md](docs/TASK-SUBTASKS.md). Board argument limits are in [docs/BOARD-API-REVIEW.md](docs/BOARD-API-REVIEW.md). Archive restore and card reordering are not provided.
 
@@ -97,7 +103,9 @@ docker compose up -d mcp
 | `ALLOWED_HOSTS` | `Host` values accepted for DNS-rebinding protection. `127.0.0.1` and `localhost` are always included. |
 | `MCP_ALLOW_WRITES` | Default `false`. Write tools are registered only when this is `true`. |
 | `TZ` | Timezone for calendar days. Default `Europe/Brussels`. |
-| `DAY_START_HOUR` | Fallback hour for `time_by_day` when the account has no start-of-next-day setting. Default `4`. It does not move stored day keys and does not override an account setting. |
+| `DAY_START_HOUR` | Fallback hour for `time_by_day` and `worklog_report` when the account has no start-of-next-day setting. Default `4`. It does not move stored day keys and does not override an account setting. |
+| `CHANGE_LOG_PATH` | Append-only write log. Default `data/changes/changes.jsonl`. The path must stay under `data/changes/`. |
+| `CHANGE_LOG_MAX_BYTES` | Cap for the current log file. Default 1 MiB. The previous file is kept as `.1`. |
 | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` | Per-client-address limit. Default 120 requests per 60 seconds. |
 | `secrets/access.key` | Bearer key, mode `0600`. A trailing newline is ignored. `ACCESS_KEY` is accepted when the file is absent. |
 | `secrets/supersync.json` | SuperSync URL, access token, and encryption password. Mode `0600`. |
@@ -123,7 +131,7 @@ Accept: application/json, text/event-stream
 
 A wrong or missing key returns `401`. A `Host` value outside `ALLOWED_HOSTS` returns `403`. Too many requests from one client address return `429`. A proxy on this machine presents its clients as `127.0.0.1`, so they share one rate-limit bucket.
 
-With writes left off, `tools/list` returns the 11 read tools. Set `MCP_ALLOW_WRITES=true` and recreate the container to register the write tools.
+With writes left off, `tools/list` returns the 13 read tools, including `list_changes`. Set `MCP_ALLOW_WRITES=true` and recreate the container to register the write tools.
 
 ## Cloudflare Tunnel
 

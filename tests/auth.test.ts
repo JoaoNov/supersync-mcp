@@ -39,7 +39,7 @@ test('access key is read from a private file or the environment and rejects a sh
 });
 
 function settings(allowWrites:boolean,rateLimitMax=120):ServerConfig{
- return {listenHost:'127.0.0.1',port:1901,allowWrites,allowedHosts:['127.0.0.1','localhost'],rateLimitMax,rateLimitWindowMs:60_000,timeZone:'Europe/Brussels',dayStartHour:4};
+ return {listenHost:'127.0.0.1',port:1901,allowWrites,allowedHosts:['127.0.0.1','localhost'],rateLimitMax,rateLimitWindowMs:60_000,timeZone:'Europe/Brussels',dayStartHour:4,changeLogPath:'data/changes/changes.jsonl',changeLogMaxBytes:1024*1024};
 }
 
 async function listen(allowWrites:boolean,rateLimitMax=120){
@@ -94,7 +94,7 @@ test('read-only mode hides write tools and does not call the writer',async()=>{
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   assert.equal(listed.status,200);
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,11);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('get_task_time'),true);assert.equal(names.includes('time_by_day'),true);
+  assert.equal(names.length,13);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('get_task_time'),true);assert.equal(names.includes('time_by_day'),true);assert.equal(names.includes('worklog_report'),true);assert.equal(names.includes('list_changes'),true);
   assert.equal(names.includes('create_task'),false);
   assert.equal(listed.json.result.tools.every((tool:{annotations?:{readOnlyHint?:boolean}})=>tool.annotations?.readOnlyHint),true);
   const called=await post(live.port,{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'create_task',arguments:{requestId:'req-1',expectedServerSeq:0,projectId:'p',title:'nope'}}},{Authorization:'Bearer '+KEY});
@@ -109,7 +109,7 @@ test('write tools are callable only when the opt-in flag is set',async()=>{
   assert.equal((await post(live.port,initialize,{Authorization:'Bearer '+KEY})).status,200);
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,32);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('time_by_day'),true);assert.equal(names.includes('delete_task'),true);assert.equal(names.includes('archive_done_tasks'),true);assert.equal(names.includes('move_task'),true);
+  assert.equal(names.length,36);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('time_by_day'),true);assert.equal(names.includes('worklog_report'),true);assert.equal(names.includes('delete_task'),true);assert.equal(names.includes('archive_done_tasks'),true);assert.equal(names.includes('move_task'),true);assert.equal(names.includes('batch'),true);assert.equal(names.includes('list_changes'),true);assert.equal(names.includes('undo_change'),true);
   assert.equal(names.includes('create_task'),true);
   assert.equal(names.includes('create_subtask'),true);
   assert.equal(names.includes('reorder_subtask'),true);

@@ -53,7 +53,9 @@ cp .env.example .env
 | `PORT` | `1901` | Port the Node process binds inside the container. |
 | `ALLOWED_HOSTS` | `127.0.0.1,localhost` | `Host` headers the MCP endpoint accepts. |
 | `TZ` | `Europe/Brussels` | Calendar timezone for today and due days. |
-| `DAY_START_HOUR` | `4` | Fallback hour for `time_by_day` when the account has no start-of-next-day setting. |
+| `DAY_START_HOUR` | `4` | Fallback hour for `time_by_day` and `worklog_report` when the account has no start-of-next-day setting. |
+| `CHANGE_LOG_PATH` | `data/changes/changes.jsonl` | Append-only write log. The path must stay under `data/changes/`. |
+| `CHANGE_LOG_MAX_BYTES` | `1048576` | Cap for the current log file. The previous file is kept as `.1`. |
 | `MCP_ALLOW_WRITES` | `false` | Set to `true` only when agents may change tasks. |
 
 `127.0.0.1` and `localhost` are always allowed, including with the listen port (`127.0.0.1:1901`). Add every other name or address a client will send in `Host`. The check is exact. `tasks.internal` also allows `tasks.internal:1901`.
@@ -133,6 +135,6 @@ Accept: application/json, text/event-stream
 
 The key is the contents of `secrets/access.key` without the trailing newline. A wrong or missing key returns `401`. A `Host` value outside `ALLOWED_HOSTS` returns `403`. More than `RATE_LIMIT_MAX` requests from one client address in the window returns `429`. A proxy on this machine presents every client as `127.0.0.1`, so those clients share one limit.
 
-With `MCP_ALLOW_WRITES` left false, `tools/list` returns the 11 read tools, including `time_by_day`. Write tools are not registered. Set `MCP_ALLOW_WRITES=true` and recreate the container to enable them. The full list is in the README.
+With `MCP_ALLOW_WRITES` left false, `tools/list` returns the 13 read tools, including `time_by_day`, `worklog_report`, and `list_changes`. Write tools are not registered. Set `MCP_ALLOW_WRITES=true` and recreate the container to enable them. The full list is in the README. Docker Compose mounts the named volume `changes` at `data/changes` so the write log survives a new container.
 
 There is no login flow and no refresh token. Put the same bearer value in the client's HTTP header configuration. Rotate the key by replacing the file, recreating `mcp`, and updating the client.
