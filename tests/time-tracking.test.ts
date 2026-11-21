@@ -23,6 +23,7 @@ test('time tools are gated and the read tool hides unrelated fields',async()=>{
    const names=(await client.listTools()).tools.map(t=>t.name);
    assert.equal(names.includes('get_task_time'),true);
    assert.equal(names.includes('log_task_time'),canWrite);
+   assert.equal(names.includes('set_task_time'),canWrite);
    assert.equal(names.includes('set_task_estimate'),canWrite);
    const read=await client.callTool({name:'get_task_time',arguments:{id:'t'}});
    assert.deepEqual(read.structuredContent,{serverSeq:3,task:{id:'t',timeSpent:5000,timeEstimate:9000,timeSpentOnDay:{'2026-01-15':5000}}});

@@ -109,14 +109,14 @@ test('write tools are callable only when the opt-in flag is set',async()=>{
   assert.equal((await post(live.port,initialize,{Authorization:'Bearer '+KEY})).status,200);
   const listed=await post(live.port,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{Authorization:'Bearer '+KEY});
   const names=listed.json.result.tools.map((tool:{name:string})=>tool.name);
-  assert.equal(names.length,32);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('time_by_day'),true);assert.equal(names.includes('worklog_report'),true);assert.equal(names.includes('delete_task'),true);assert.equal(names.includes('archive_done_tasks'),true);assert.equal(names.includes('move_task'),true);
+  assert.equal(names.length,34);assert.equal(names.includes('search_tasks'),true);assert.equal(names.includes('list_today'),true);assert.equal(names.includes('time_by_day'),true);assert.equal(names.includes('worklog_report'),true);assert.equal(names.includes('delete_task'),true);assert.equal(names.includes('archive_done_tasks'),true);assert.equal(names.includes('move_task'),true);assert.equal(names.includes('batch'),true);
   assert.equal(names.includes('create_task'),true);
   assert.equal(names.includes('create_subtask'),true);
   assert.equal(names.includes('reorder_subtask'),true);
   assert.equal(names.includes('detach_subtask'),true);
   assert.equal(names.includes('attach_task'),true);
   assert.equal(names.includes('get_task_time'),true);
-  assert.equal(names.includes('log_task_time'),true);
+  assert.equal(names.includes('log_task_time'),true);assert.equal(names.includes('set_task_time'),true);
   assert.equal(names.includes('set_task_estimate'),true);
   assert.equal(names.includes('create_tag'),true);
   assert.equal(names.includes('rename_tag'),true);

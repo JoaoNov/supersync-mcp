@@ -8,7 +8,7 @@ One process serves one bearer key and one SuperSync account. Reads are available
 
 ## Tools
 
-Version 0.3.0 defines 32 tools. With writes off, only the 12 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 34 tools. With writes off, only the 12 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 | Kind | Tools |
 |---|---|
@@ -19,7 +19,8 @@ Version 0.3.0 defines 32 tools. With writes off, only the 12 read tools are regi
 | Done and reopen | `complete_task` / `reopen_task` |
 | Delete | `delete_task` |
 | Archive | `archive_done_tasks` |
-| Time | `log_task_time` / `set_task_estimate` |
+| Time | `log_task_time` / `set_task_time` / `set_task_estimate` |
+| Batch | `batch` |
 | Tags | `update_task_tags` / `create_tag` / `rename_tag` |
 | Standard Kanban | `set_task_kanban_status` |
 | Projects | `create_project` / `move_task` |
@@ -40,17 +41,18 @@ Read tools:
 Write tools, registered only when writes are on:
 
 - `create_task` and `create_subtask` add a task. `create_subtask` is the same Add SubTask write as `create_task` with `parentId`.
-- `update_task` changes title, notes, schedule, or deadline. It does not change `projectId`.
+- `update_task` changes title, notes, schedule, or deadline. It does not change `projectId` or time spent.
 - `reorder_subtask` moves a subtask up, down, to the top, or to the bottom inside its current parent.
 - `detach_subtask` turns a subtask into a top-level task. `attach_task` turns a top-level task into a subtask and refuses a task that already has subtasks, an issue, a repeat config, a due time, or a reminder.
 - `complete_task` marks a task done. `reopen_task` clears done on an active task. It does not restore an archived task.
 - `delete_task` requires `confirm: true`. It deletes an active task and its subtasks. Archived tasks are refused. Planner day ids are left as they are.
 - `archive_done_tasks` requires `confirm: true`. It archives every done top-level active task and that task's subtasks. A done subtask of an open parent stays active.
-- `log_task_time` adds time on one day. The day defaults to logical today. `set_task_estimate` sets `timeEstimate`.
+- `log_task_time` adds time on one day. The day defaults to logical today. `set_task_time` sets one `YYYY-MM-DD` key in `timeSpentOnDay` to an exact number of milliseconds, including `0` to remove that key, for an active, done, or archived task. It sends `updateTask` with the full day map. The reducer sets `timeSpent` to the sum of that map, and a parent in the same list moves by the difference. The day key is stored as given. `set_task_estimate` sets `timeEstimate`. `update_task` does not take a time field.
 - `update_task_tags` adds or removes named tags and keeps the others. `create_tag` and `rename_tag` manage normal tags. TODAY cannot be created or renamed.
 - `set_task_kanban_status` sets `todo`, `in_progress`, or `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
 - `create_project` adds a project. `move_task` moves a top-level task and its subtasks to another project.
 - `create_board` and `update_board` manage a board. A board has a name and 1 to 50 columns. `update_board` changes settings of existing columns and keeps column order, card placement, and task bodies.
+- `batch` runs 1 to 20 write operations, including `set_time`, in order and uploads them as one SuperSync request with one `expectedServerSeq` and one `requestId`. `idFrom`, `projectIdFrom`, `parentIdFrom`, `targetProjectIdFrom`, and `addTagIdsFrom` use the id created by an earlier operation in that batch. If `expectedServerSeq` is not the current sequence, nothing is uploaded. Every operation is replayed through the official reducers before the upload, and a failure in any of them uploads nothing. The batch is also rejected before upload when its operations contradict each other. `BATCH_CONFLICT` names the operations by index, kind, and requestId. That includes a later operation on a task deleted or archived earlier in the batch, moving one task to two projects, deleting a task completed earlier in the batch, a repeated operation `requestId`, and an id that is neither in the account nor produced by an earlier operation in the batch. An operation `requestId` is optional and must be unique inside the batch. The same batch `requestId` retries that same upload. SuperSync still decides each operation inside the request. If the server accepts some and rejects others, the call fails with `WRITE_PARTIALLY_ACCEPTED` and does not upload that request again. Read the account again and send a new request for whatever is still missing. A fully rejected upload leaves none of the batch on the server.
 
 Dates, reminders, and subtasks are described in [docs/TASK-DATES.md](docs/TASK-DATES.md), [docs/TASK-REMINDERS.md](docs/TASK-REMINDERS.md), and [docs/TASK-SUBTASKS.md](docs/TASK-SUBTASKS.md). Board argument limits are in [docs/BOARD-API-REVIEW.md](docs/BOARD-API-REVIEW.md). Archive restore and card reordering are not provided.
 
