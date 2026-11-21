@@ -8,16 +8,21 @@ test('server config defaults to a local read-only listener and rejects unsafe va
  assert.equal(config.port,1901);
  assert.equal(config.allowWrites,false);
  assert.equal(config.timeZone,'Europe/Brussels');
+ assert.equal(config.dayStartHour,4);
  assert.deepEqual(config.allowedHosts,['127.0.0.1','localhost']);
  const custom=loadServerConfig({LISTEN_HOST:'10.1.2.3',PORT:'1902',MCP_ALLOW_WRITES:'true',TZ:'UTC',ALLOWED_HOSTS:'tasks.internal'});
  assert.equal(custom.listenHost,'10.1.2.3');
  assert.equal(custom.port,1902);
  assert.equal(custom.allowWrites,true);
  assert.equal(custom.timeZone,'UTC');
+ assert.equal(loadServerConfig({DAY_START_HOUR:'6'}).dayStartHour,6);
+ assert.equal(loadServerConfig({DAY_START_HOUR:''}).dayStartHour,4);
  assert.deepEqual(custom.allowedHosts,['tasks.internal','127.0.0.1','localhost']);
  assert.throws(()=>loadServerConfig({PORT:'0'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({MCP_ALLOW_WRITES:'maybe'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({TZ:'Not/AZone'}),/SERVER_CONFIG_INVALID/);
+ assert.throws(()=>loadServerConfig({DAY_START_HOUR:'24'}),/SERVER_CONFIG_INVALID/);
+ assert.throws(()=>loadServerConfig({DAY_START_HOUR:'4.5'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({LISTEN_HOST:''}),/SERVER_CONFIG_INVALID/);
  const dir=mkdtempSync(join(tmpdir(),'sp-config-')),path=join(dir,'credentials.json');
  // Windows chmod cannot express POSIX permissions. Simulate only this

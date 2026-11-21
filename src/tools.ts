@@ -3,6 +3,7 @@ import {searchTasks} from './search.js';
 import {todayView} from './today.js';
 import {officialModule} from './projection.js';
 import {dateSchema,hasDates,validDay,validateDates} from './dates.js';
+import {timeByDay} from './time-by-day.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';import {boardOutput,columnSchema,columnPatchSchema,publicBoard} from './boards.js';import {writeTask} from './write.js';import {current} from './sync.js';
 function selectFields(value:any,keys:string[]){return Object.fromEntries(keys.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]]));}
@@ -30,7 +31,7 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
   return {content:[{type:'text' as const,text}],structuredContent:JSON.parse(text) as Record<string,unknown>};
  };
  const error=(e:unknown)=>{
-  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TAG_NAME_ALREADY_EXISTS','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT','SEARCH_VALIDATION_FAILED','ARCHIVE_EMPTY']);
+  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TAG_NAME_ALREADY_EXISTS','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT','SEARCH_VALIDATION_FAILED','ARCHIVE_EMPTY','TIME_RANGE_INVALID']);
   const code=e instanceof Error&&known.has(e.message)?e.message:'SYNC_FAILED';
   console.warn(JSON.stringify({event:'sync_failed',reason:code}));
   return {isError:true,content:[{type:'text' as const,text:'Could not complete the operation. Diagnostic code: '+code}]};
@@ -65,6 +66,10 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
    if(source&&typeof source==='object')for(const key of Object.keys(source))if(validDay(key)&&Number.isFinite(source[key]))timeSpentOnDay[key]=source[key];
    return output({serverSeq:p.serverSeq,task:{id:task.id,timeSpent:Number.isFinite(task.timeSpent)?task.timeSpent:0,timeEstimate:Number.isFinite(task.timeEstimate)?task.timeEstimate:0,timeSpentOnDay}});
   }catch(e){return error(e);}
+ });
+ const dayTime=z.object({date:z.string(),weekday:z.string(),totalMs:z.number().int().min(0),hours:z.number(),tasks:z.array(z.object({id:z.string(),title:z.string(),timeMs:z.number(),hours:z.number(),archived:z.boolean()})).optional()});
+ mcp.registerTool('time_by_day',{description:'Tracked time per day for an inclusive YYYY-MM-DD range, in one call. Omit from and to for the current Monday-Sunday week. The week uses the account start-of-next-day offset when that setting exists; otherwise DAY_START_HOUR (default 4, so the working day ends at 04:00 in TZ, default Europe/Brussels). timeSpentOnDay keys are already the app logical days and are not re-split by hour. Totals count leaf tasks only, active and archived, so a parent that also stores its subtasks\' time is not added again. includeTasks returns the top N leaves for each day. projectId and tagId filter those leaves.',inputSchema:{from:z.string().refine(validDay).optional(),to:z.string().refine(validDay).optional(),projectId:z.string().min(1).max(255).optional(),tagId:z.string().min(1).max(255).optional(),includeTasks:z.number().int().min(1).max(50).optional()},outputSchema:{serverSeq:serverSeqOutput,timeZone:z.string(),dayBoundary:z.object({source:z.enum(['account','DAY_START_HOUR']),offsetMs:z.number().int().min(0)}),from:z.string(),to:z.string(),days:z.array(dayTime),totalMs:z.number().int().min(0),hours:z.number()},annotations},async args=>{
+  try{const p=await provider();const official=await officialModule();return output({serverSeq:p.serverSeq,...timeByDay(p.state,official,args)});}catch(e){return error(e);}
  });
 
  mcp.registerTool('get_board',{description:'Get a board by id, including its columns and card order. Returns null when the board is missing.',inputSchema:{id:z.string().min(1).max(255)},outputSchema:{serverSeq:serverSeqOutput,board:boardOutput.nullable()},annotations},async({id})=>{try{const p=await provider();return output({serverSeq:p.serverSeq,board:publicBoard(p.state.boards.boardCfgs.find((b:any)=>b.id===id))});}catch(e){return error(e);}});
