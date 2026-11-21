@@ -77,8 +77,14 @@ async function finishWrite(db:ReturnType<typeof openStore>,requestId:string,cfg:
  const row=db.prepare('SELECT payload, logged FROM change_log WHERE requestId=?').get(requestId) as {payload:string;logged:number}|undefined;
  if(row&&!row.logged){
   const payload=JSON.parse(row.payload);payload.serverSeqAfter=result.serverSeq;payload.at=new Date().toISOString();
-  try{appendChange(payload);}catch{throw new Error('CHANGE_LOG_FAILED');}
-  db.prepare('UPDATE change_log SET payload=?, logged=1 WHERE requestId=?').run(JSON.stringify(payload),requestId);
+  try{
+   appendChange(payload);
+   db.prepare('UPDATE change_log SET payload=?, logged=1 WHERE requestId=?').run(JSON.stringify(payload),requestId);
+  }catch{
+   // The upload is already accepted. Reporting an error here makes a client send a new requestId and apply the change again.
+   console.warn(JSON.stringify({event:'change_log_failed',requestId,serverSeq:result.serverSeq}));
+   return {...result,changeLogWarning:'CHANGE_LOG_FAILED: the upload was applied, but the local change log was not written. Retry this same requestId to record it. A new requestId would apply the change again.'};
+  }
  }
  return result;
 }
