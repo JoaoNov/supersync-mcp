@@ -8,7 +8,7 @@ One process serves one bearer key and one SuperSync account. Reads are available
 
 ## Tools
 
-Version 0.3.0 defines 31 tools. With writes off, only the 11 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 32 tools. With writes off, only the 11 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 | Kind | Tools |
 |---|---|
@@ -19,7 +19,7 @@ Version 0.3.0 defines 31 tools. With writes off, only the 11 read tools are regi
 | Done and reopen | `complete_task` / `reopen_task` |
 | Delete | `delete_task` |
 | Archive | `archive_done_tasks` |
-| Time | `log_task_time` / `set_task_estimate` |
+| Time | `log_task_time` / `set_task_time` / `set_task_estimate` |
 | Tags | `update_task_tags` / `create_tag` / `rename_tag` |
 | Standard Kanban | `set_task_kanban_status` |
 | Projects | `create_project` / `move_task` |
@@ -39,13 +39,13 @@ Read tools:
 Write tools, registered only when writes are on:
 
 - `create_task` and `create_subtask` add a task. `create_subtask` is the same Add SubTask write as `create_task` with `parentId`.
-- `update_task` changes title, notes, schedule, or deadline. It does not change `projectId`.
+- `update_task` changes title, notes, schedule, or deadline. It does not change `projectId` or time spent.
 - `reorder_subtask` moves a subtask up, down, to the top, or to the bottom inside its current parent.
 - `detach_subtask` turns a subtask into a top-level task. `attach_task` turns a top-level task into a subtask and refuses a task that already has subtasks, an issue, a repeat config, a due time, or a reminder.
 - `complete_task` marks a task done. `reopen_task` clears done on an active task. It does not restore an archived task.
 - `delete_task` requires `confirm: true`. It deletes an active task and its subtasks. Archived tasks are refused. Planner day ids are left as they are.
 - `archive_done_tasks` requires `confirm: true`. It archives every done top-level active task and that task's subtasks. A done subtask of an open parent stays active.
-- `log_task_time` adds time on one day. The day defaults to logical today. `set_task_estimate` sets `timeEstimate`.
+- `log_task_time` adds time on one day. The day defaults to logical today. `set_task_time` sets one `YYYY-MM-DD` key in `timeSpentOnDay` to an exact number of milliseconds, including `0` to remove that key, for an active, done, or archived task. It sends `updateTask` with the full day map. The reducer sets `timeSpent` to the sum of that map, and a parent in the same list moves by the difference. The day key is stored as given. `set_task_estimate` sets `timeEstimate`. `update_task` does not take a time field.
 - `update_task_tags` adds or removes named tags and keeps the others. `create_tag` and `rename_tag` manage normal tags. TODAY cannot be created or renamed.
 - `set_task_kanban_status` sets `todo`, `in_progress`, or `done`. In progress uses the `KANBAN_IN_PROGRESS` tag.
 - `create_project` adds a project. `move_task` moves a top-level task and its subtasks to another project.

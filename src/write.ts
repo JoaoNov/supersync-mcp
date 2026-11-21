@@ -10,7 +10,22 @@ import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from '.
 import {dateActions,dateContext,dateState,hasDates,validDay,validateDates,type DateInput} from './dates.js';
 import {applyArchive} from './archive.js';
 const MAX_TRACKED_MS=1000*60*60*1000;
-export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'estimate'|'create_tag'|'rename_tag';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string};
+export type WriteInput=DateInput & {requestId:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'set_time'|'estimate'|'create_tag'|'rename_tag';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeSpent?:number;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string};
+function trackedBoxes(state:any){
+ return [['active',state?.tasks],['young',state?.archiveYoung?.task],['old',state?.archiveOld?.task]] as const;
+}
+function locateTask(state:any,id:string){
+ for(const [box,tasks] of trackedBoxes(state))if(tasks?.entities&&Object.hasOwn(tasks.entities,id)&&tasks.entities[id])return {box,task:tasks.entities[id]};
+}
+function copyDayMap(task:any){
+ const source=task?.timeSpentOnDay;
+ return source&&typeof source==='object'?{...source}:{};
+}
+function sumTimeSpent(map:any){
+ let total=0;
+ if(map&&typeof map==='object')for(const value of Object.values(map) as any[])if(value)total+=+value;
+ return total;
+}
 function tagTitle(state:any,title:string|undefined,ignoreId?:string){
  if(!title?.trim()||title!==title.trim()||title.length>200||/[\x00-\x1f]/.test(title)||title.toLowerCase()==='today')throw new Error('WRITE_VALIDATION_FAILED');
  if(Object.values(state.tag.entities).some((tag:any)=>tag&&tag.id!==ignoreId&&tag.title===title))throw new Error('TAG_NAME_ALREADY_EXISTS');
@@ -161,6 +176,16 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
     if(task.parentId||parent.parentId||task.id===parent.id||task.subTaskIds?.length||task.repeatCfgId||task.issueId||task.issueProviderId||task.issueType||task.dueWithTime||task.reminderId||task.remindAt)throw new Error('INVALID_TASK_HIERARCHY');
     action={type:'[Task Shared] convertToSubTask',taskId,targetParentId:parentId,afterTaskId:input.afterTaskId??null};
    }
+  }else if(input.kind==='set_time'){
+   taskId=input.id!;
+   const found=locateTask(p.state,taskId);
+   if(!found)throw new Error('TASK_NOT_FOUND');
+   if(!Number.isInteger(input.timeSpent)||input.timeSpent!<0||input.timeSpent!>MAX_TRACKED_MS)throw new Error('WRITE_VALIDATION_FAILED');
+   const day=input.day;
+   if(!day||!validDay(day))throw new Error('WRITE_VALIDATION_FAILED');
+   const timeSpentOnDay=copyDayMap(found.task);
+   if(input.timeSpent===0)delete timeSpentOnDay[day];else timeSpentOnDay[day]=input.timeSpent;
+   action={type:'[Task Shared] updateTask',task:{id:taskId,changes:{timeSpentOnDay}},isIgnoreShortSyntax:true};
   }else if(input.kind==='time'||input.kind==='estimate'){
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(p.state.tasks.entities,taskId)||!p.state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
@@ -220,6 +245,7 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   for(const a of actions){
    const before=predicted.tasks?.entities[taskId];
    predicted=official.reduce(predicted,{...a,meta:{isRemote:true}});
+   if(input.kind==='set_time')predicted={...predicted,...applyArchive(predicted,a,now,official)};
    // Standard deadline auto-planning may clear an existing timed schedule.
    // Reject before enqueueing instead of silently losing its notification.
    if(a.type==='[Task Shared] setDeadline'&&before?.remindAt!=null&&predicted.tasks.entities[taskId]?.remindAt!==before.remindAt)throw new Error('REMINDER_SCHEDULE_CONFLICT');
@@ -236,7 +262,7 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    const archived=applyArchive(predicted,action,now,official);
    predicted={...predicted,...archived};
    if(!bulkIds?.every(id=>!predicted.tasks.entities[id]&&predicted.archiveYoung.task.entities[id]?.isDone===true&&predicted.archiveYoung.task.entities[id].dueDay===undefined&&predicted.archiveYoung.task.entities[id].dueWithTime===undefined))throw new Error('WRITE_VALIDATION_FAILED');
-  }else if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(input.kind!=='set_time'&&!created)throw new Error('WRITE_VALIDATION_FAILED');
   if(input.kind==='move'){
    const target=input.targetProjectId!;
    const ids=[taskId,...(action.task.subTaskIds??[])];
@@ -257,7 +283,25 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    const child=predicted.tasks.entities[taskId];
    if(child.parentId!==parentId||child.projectId!==predicted.tasks.entities[parentId].projectId||!predicted.tasks.entities[parentId].subTaskIds.includes(taskId)||predicted.projects.entities[child.projectId]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
   }
-  if(input.kind==='time'){
+  if(input.kind==='set_time'){
+   const before=locateTask(p.state,taskId),after=locateTask(predicted,taskId);
+   if(!before||!after||before.box!==after.box)throw new Error('WRITE_VALIDATION_FAILED');
+   const day=input.day!;
+   const previous=copyDayMap(before.task),next=copyDayMap(after.task);
+   if(input.timeSpent===0?Object.hasOwn(next,day):next[day]!==input.timeSpent)throw new Error('WRITE_VALIDATION_FAILED');
+   for(const key of new Set([...Object.keys(previous),...Object.keys(next)]))if(key!==day&&previous[key]!==next[key])throw new Error('WRITE_VALIDATION_FAILED');
+   if(after.task.timeSpent!==sumTimeSpent(next)||after.task.timeEstimate!==before.task.timeEstimate||after.task.isDone!==before.task.isDone)throw new Error('WRITE_VALIDATION_FAILED');
+   if(before.task.parentId){
+    const parentBefore=locateTask(p.state,before.task.parentId),parentAfter=locateTask(predicted,before.task.parentId);
+    if(parentBefore?.box===before.box&&parentAfter?.box===before.box){
+     const delta=(input.timeSpent??0)-(Number(previous[day])||0);
+     const parentDays=copyDayMap(parentAfter.task);
+     const expected=(Number(copyDayMap(parentBefore.task)[day])||0)+delta;
+     if(expected>0?parentDays[day]!==expected:Object.hasOwn(parentDays,day))throw new Error('WRITE_VALIDATION_FAILED');
+     if(parentAfter.task.timeSpent!==(parentBefore.task.timeSpent??0)+delta)throw new Error('WRITE_VALIDATION_FAILED');
+    }
+   }
+  }else if(input.kind==='time'){
    const before=p.state.tasks.entities[taskId],after=predicted.tasks.entities[taskId];
    const spent=(value:any)=>Number(value?.timeSpentOnDay?.[action.date]??0);
    if(spent(after)!==spent(before)+action.duration||after.timeSpent!==(before.timeSpent??0)+action.duration)throw new Error('WRITE_VALIDATION_FAILED');
