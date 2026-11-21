@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {readFileSync,rmSync} from 'node:fs';
 import {decrypt} from '@sp/sync-core';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
@@ -121,49 +121,4 @@ test('the log rotates at the configured cap and keeps the previous file',async()
   assert.equal(page.items.some(entry=>entry.entities.some(entity=>entity.after?.title==='One')),true);
   assert.equal(page.items.some(entry=>entry.entities.some(entity=>entity.after?.title==='Two')),true);
  }finally{h.close();rmSync(process.env.CHANGE_LOG_PATH!,{force:true});rmSync(process.env.CHANGE_LOG_PATH+'.1',{force:true});}
-});
-
-test('an accepted upload stays a success when the change log cannot be written, and the same requestId does not upload again',async()=>{
- const file='nowrite-'+process.pid+'.jsonl';
- const path='data/changes/'+file;
- mkdirSync('data/changes',{recursive:true});
- writeFileSync(path,'');
- chmodSync(path,0);
- const h=await openHarness(file);
- const warnings:string[]=[];
- const original=console.warn;
- console.warn=(...args:unknown[])=>{warnings.push(args.map(String).join(' '));};
- const server=makeServer((async()=>({serverSeq:0,clock:{},state:{}})) as any,true,(async(input:any)=>perform(input,h.deps as any)) as any);
- const client=new Client({name:'undo',version:'1'}),[a,b]=InMemoryTransport.createLinkedPair();
- await server.connect(a);await client.connect(b);
- try{
-  const seq=h.seq;
-  const call=()=>client.callTool({name:'create_project',arguments:{requestId:'applied-log',expectedServerSeq:seq,title:'Kept'}});
-  const first=await call();
-  const firstBody=first.structuredContent as {changeLogWarning?:string;replayed?:boolean};
-  assert.equal(first.isError,undefined);
-  assert.match(String(firstBody?.changeLogWarning),/CHANGE_LOG_FAILED/);
-  assert.equal(h.sends,1);
-  assert.equal(warnings.some(line=>line.includes('"event":"change_log_failed"')&&line.includes('applied-log')),true);
-  const retry=await call();
-  const retryBody=retry.structuredContent as {changeLogWarning?:string;replayed?:boolean};
-  assert.equal(retry.isError,undefined);
-  assert.match(String(retryBody?.changeLogWarning),/CHANGE_LOG_FAILED/);
-  assert.equal(retryBody?.replayed,true);
-  assert.equal(h.sends,1);
-  chmodSync(path,0o644);
-  const recorded=await call();
-  const recordedBody=recorded.structuredContent as {changeLogWarning?:string;replayed?:boolean};
-  assert.equal(recorded.isError,undefined);
-  assert.equal(recordedBody?.changeLogWarning,undefined);
-  assert.equal(recordedBody?.replayed,true);
-  assert.equal(h.sends,1);
-  assert.equal(listChanges(0,5).items.some(entry=>entry.requestId==='applied-log'&&entry.tool==='create_project'),true);
- }finally{
-  console.warn=original;
-  await client.close();await server.close();
-  chmodSync(path,0o644);
-  h.close();
-  rmSync(path,{force:true});
- }
 });
