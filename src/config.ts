@@ -23,6 +23,7 @@ const serverSchema=z.object({
  rateLimitMax:z.coerce.number().int().min(1).max(100_000),
  rateLimitWindowMs:z.coerce.number().int().min(1000).max(3_600_000),
  timeZone:z.string().min(1),
+ dayStartHour:z.coerce.number().int().min(0).max(23),
 });
 export function loadServerConfig(env:NodeJS.ProcessEnv=process.env){
  const allowWrites=flag(env.MCP_ALLOW_WRITES,false);
@@ -35,6 +36,7 @@ export function loadServerConfig(env:NodeJS.ProcessEnv=process.env){
   rateLimitMax:env.RATE_LIMIT_MAX??120,
   rateLimitWindowMs:env.RATE_LIMIT_WINDOW_MS??60_000,
   timeZone:(env.TZ??'').trim()||'Europe/Brussels',
+  dayStartHour:env.DAY_START_HOUR===undefined||env.DAY_START_HOUR===''?4:env.DAY_START_HOUR,
  });
  if(!parsed.success||allowWrites===undefined)throw new Error('SERVER_CONFIG_INVALID');
  try{new Intl.DateTimeFormat('en-CA',{timeZone:parsed.data.timeZone});}catch{throw new Error('SERVER_CONFIG_INVALID');}
