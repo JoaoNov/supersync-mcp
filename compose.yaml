@@ -27,6 +27,7 @@ services:
       RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-120}"
       RATE_LIMIT_WINDOW_MS: "${RATE_LIMIT_WINDOW_MS:-60000}"
       TZ: "${TZ:-Europe/Brussels}"
+      DAY_START_HOUR: "${DAY_START_HOUR:-4}"
     restart: unless-stopped
     # Publish only on the host interface named by MCP_BIND_ADDRESS.
     # 127.0.0.1 keeps the port off every other interface. Set it to a private
