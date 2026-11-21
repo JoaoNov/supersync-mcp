@@ -67,7 +67,7 @@ test('batch uploads one validated sequence and refuses a stale or invalid batch 
   assert.equal(h.sends,quiet);
   assert.equal(Object.keys(h.state.projects.entities).includes('Nope'),false);
   const before=structuredClone(h.state.tasks);
-  await assert.rejects(h.at({kind:'batch',operations:[{kind:'create_project',title:'Kept'},{kind:'delete',id:'missing',confirm:true}]}),/TASK_NOT_FOUND/);
+  await assert.rejects(h.at({kind:'batch',operations:[{kind:'create_project',title:'Kept'},{kind:'delete',id:'missing',confirm:true}]}),/BATCH_CONFLICT: operation 1 \(delete\) references task missing, which does not exist/);
   assert.equal(h.sends,quiet);
   assert.deepEqual(h.state.tasks,before);
   const result=await h.at({kind:'batch',operations:[
@@ -107,6 +107,63 @@ test('batch uploads one validated sequence and refuses a stale or invalid batch 
   assert.equal(h.state.tasks.entities[parent].notes,'kept');
   assert.ok(h.state.projects.entities[other].taskIds.includes(parent));
   assert.equal(h.state.projects.entities[project].taskIds.includes(parent),false);
+ }finally{Date.now=h.realNow;h.close();}
+});
+
+test('batch rejects internal conflicts by name before any upload',async()=>{
+ const h=await openHarness();
+ Date.now=()=>Date.parse('2026-06-15T12:00:00Z');
+ try{
+  const quiet=h.sends;
+  const before=structuredClone({projects:h.state.projects.ids,tasks:h.state.tasks.ids});
+  const reject=async(operations:any[],pattern:RegExp)=>assert.rejects(h.at({kind:'batch',operations}),pattern);
+  await reject([
+   {kind:'create_project',title:'Parent project'},
+   {kind:'create',projectIdFrom:0,title:'Parent'},
+   {kind:'create',projectIdFrom:0,parentIdFrom:1,title:'Child'},
+   {kind:'delete',idFrom:1,confirm:true},
+   {kind:'update',idFrom:2,notes:'too late'},
+  ],/BATCH_CONFLICT: operation 4 \(update\) uses task .+ deleted by operation 3 \(delete\)/);
+  await reject([
+   {kind:'create_project',title:'From'},
+   {kind:'create_project',title:'Middle'},
+   {kind:'create_project',title:'To'},
+   {kind:'create',projectIdFrom:0,title:'Mover'},
+   {kind:'move',idFrom:3,targetProjectIdFrom:1},
+   {kind:'move',idFrom:3,targetProjectIdFrom:2},
+  ],/BATCH_CONFLICT: operation 5 \(move\) moves task .+ to another project, already moved by operation 4 \(move\)/);
+  await reject([
+   {kind:'create_project',title:'Done project'},
+   {kind:'create',projectIdFrom:0,title:'Done task'},
+   {kind:'complete',idFrom:1},
+   {kind:'delete',idFrom:1,confirm:true},
+  ],/BATCH_CONFLICT: operation 3 \(delete\) deletes task .+ completed by operation 2 \(complete\)/);
+  await reject([
+   {kind:'create_project',title:'One',requestId:'dup'},
+   {kind:'create_project',title:'Two',requestId:'dup'},
+  ],/BATCH_CONFLICT: operation 1 \(create_project, requestId dup\) reuses requestId dup from operation 0 \(create_project, requestId dup\)/);
+  await assert.rejects(perform({kind:'batch',expectedServerSeq:h.seq,requestId:'reuse-batch',operations:[{kind:'create_project',title:'Same',requestId:'reuse-batch'}]},h.deps as any),/BATCH_CONFLICT: operation 0 \(create_project, requestId reuse-batch\) reuses requestId reuse-batch from the batch request/);
+  await reject([{kind:'update',id:'missing-task',notes:'nope'}],/BATCH_CONFLICT: operation 0 \(update\) references task missing-task, which does not exist/);
+  await reject([{kind:'create',projectId:'missing-project',title:'Nope'}],/BATCH_CONFLICT: operation 0 \(create\) references project missing-project, which does not exist/);
+  await reject([
+   {kind:'create_project',title:'Tagged'},
+   {kind:'create',projectIdFrom:0,title:'Task'},
+   {kind:'tags',idFrom:1,addTagIds:['missing-tag']},
+  ],/BATCH_CONFLICT: operation 2 \(tags\) references tag missing-tag, which does not exist/);
+  assert.equal(h.sends,quiet);
+  assert.deepEqual({projects:h.state.projects.ids,tasks:h.state.tasks.ids},before);
+  const kept=await h.at({kind:'batch',operations:[{kind:'create_project',title:'Kept'},{kind:'create',projectIdFrom:0,title:'Kept task'},{kind:'update',idFrom:1,notes:'created earlier'}]});
+  assert.equal(h.sends,quiet+1);
+  assert.equal(h.state.tasks.entities[kept.operations[1].taskId].notes,'created earlier');
+  const server=makeServer((async()=>({serverSeq:h.seq,clock:{},state:h.state})) as any,true,(input:any)=>perform(input,h.deps as any));
+  const client=new Client({name:'batch-conflict',version:'1'}),[a,b]=InMemoryTransport.createLinkedPair();
+  await server.connect(a);await client.connect(b);
+  try{
+   const denied=await client.callTool({name:'batch',arguments:{requestId:'mcp-conflict',expectedServerSeq:h.seq,operations:[{kind:'create_project',title:'A',requestId:'dup'},{kind:'create_project',title:'B',requestId:'dup'}]}});
+   assert.equal(denied.isError,true);
+   assert.match(String((denied as any).content?.[0]?.text??''),/Diagnostic code: BATCH_CONFLICT\. operation 1 \(create_project, requestId dup\) reuses requestId dup from operation 0 \(create_project, requestId dup\)/);
+   assert.equal(h.sends,quiet+1);
+  }finally{await client.close();await server.close();}
  }finally{Date.now=h.realNow;h.close();}
 });
 

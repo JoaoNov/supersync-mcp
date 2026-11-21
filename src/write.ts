@@ -287,6 +287,58 @@ function planOperation(input:WriteFields,state:any,official:any,now:number){
   }
  return {kind:input.kind,taskId:taskId!,actions,bulkIds,predicted,isBoard,isTag};
 }
+const TASK_KINDS=new Set(['update','complete','reopen','tags','kanban','delete','move','reorder','detach','attach','time','estimate']);
+function taskTree(state:any,id:string,seen=new Set<string>()):string[]{
+ if(!id||seen.has(id))return [];
+ seen.add(id);
+ const children=Array.isArray(state.tasks?.entities?.[id]?.subTaskIds)?state.tasks.entities[id].subTaskIds:[];
+ return [id,...children.flatMap((child:string)=>taskTree(state,child,seen))];
+}
+function operationName(index:number,op:WriteFields){return `operation ${index} (${op.kind}${op.requestId?`, requestId ${op.requestId}`:''})`;}
+function batchConflict(detail:string):never{throw new Error('BATCH_CONFLICT: '+detail);}
+function rejectBatchConflicts(operations:WriteFields[],batchRequestId:string){
+ const removed=new Map<string,'deleted'|'archived'>();
+ const removedBy=new Map<string,string>();
+ const completed=new Map<string,string>();
+ const moved=new Map<string,string>();
+ const requestIds=new Map<string,string>();
+ for(const [index,op] of operations.entries()){
+  if(op.requestId!==undefined){
+   if(!/^[A-Za-z0-9_-]{1,64}$/.test(op.requestId))throw new Error('WRITE_VALIDATION_FAILED');
+   const name=operationName(index,op);
+   if(op.requestId===batchRequestId||requestIds.has(op.requestId))batchConflict(`${name} reuses requestId ${op.requestId} from ${op.requestId===batchRequestId?'the batch request':requestIds.get(op.requestId)}`);
+   requestIds.set(op.requestId,name);
+  }
+ }
+ const has=(state:any,collection:'task'|'project'|'tag'|'board',id:string)=>collection==='task'?Object.hasOwn(state.tasks?.entities??{},id)&&!!state.tasks.entities[id]:collection==='project'?Object.hasOwn(state.projects?.entities??{},id)&&!!state.projects.entities[id]:collection==='tag'?Object.hasOwn(state.tag?.entities??{},id)&&!!state.tag.entities[id]:!!state.boards?.boardCfgs?.some((board:any)=>board.id===id);
+ const requireId=(state:any,index:number,op:WriteFields,collection:'task'|'project'|'tag'|'board',id:string|undefined,role:string)=>{
+  const name=operationName(index,op);
+  if(!id)batchConflict(`${name} references a ${collection} id${role}, which does not exist`);
+  const earlier=removed.get(id);
+  if(earlier)batchConflict(`${name} uses ${collection} ${id}${role}, ${earlier} by ${removedBy.get(id)}`);
+  if(!has(state,collection,id))batchConflict(`${name} references ${collection} ${id}${role}, which does not exist`);
+ };
+ return {note(index:number,op:WriteFields,step:WriteFields,state:any){
+  const name=operationName(index,op);
+  if(TASK_KINDS.has(op.kind))requireId(state,index,op,'task',step.id,'');
+  if(op.kind==='rename_tag')requireId(state,index,op,'tag',step.id,'');
+  if(op.kind==='update_board')requireId(state,index,op,'board',step.id,'');
+  if(op.kind==='create'||op.kind==='create_board')requireId(state,index,op,'project',step.projectId,'');
+  if(step.parentId!==undefined)requireId(state,index,op,'task',step.parentId,' as parent');
+  if(op.kind==='move')requireId(state,index,op,'project',step.targetProjectId,' as the target project');
+  if(step.afterTaskId)requireId(state,index,op,'task',step.afterTaskId,' as the sibling');
+  for(const id of [...(step.addTagIds??[]),...(step.removeTagIds??[])])if(id!=='TODAY')requireId(state,index,op,'tag',id,'');
+  if(op.kind==='move'&&step.id&&moved.has(step.id))batchConflict(`${name} moves task ${step.id} to another project, already moved by ${moved.get(step.id)}`);
+  if(op.kind==='delete'&&step.id&&has(state,'task',step.id))for(const id of taskTree(state,step.id))if(completed.has(id))batchConflict(`${name} deletes task ${id}, completed by ${completed.get(id)}`);
+ },remember(index:number,op:WriteFields,step:WriteFields,state:any,bulkIds?:string[]){
+  const name=operationName(index,op);
+  if(op.kind==='delete'&&step.id)for(const id of taskTree(state,step.id)){removed.set(id,'deleted');removedBy.set(id,name);}
+  if(op.kind==='archive')for(const id of bulkIds??[]){removed.set(id,'archived');removedBy.set(id,name);}
+  if(op.kind==='complete'&&step.id)completed.set(step.id,name);
+  if(op.kind==='reopen'&&step.id)completed.delete(step.id);
+  if(op.kind==='move'&&step.id)for(const id of taskTree(state,step.id))moved.set(id,name);
+ }};
+}
 
 export async function perform(input:WriteInput,deps={loadCredentials,current,openStore,officialModule,send:fetch},onInvalidate=invalidate){
  if(input.kind==='batch'){
@@ -302,12 +354,15 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   if(input.expectedServerSeq!==p.serverSeq)throw new Error('STALE_REVISION_READ_AGAIN');
   const official=await deps.officialModule();const now=Date.now();
   const steps=input.kind==='batch'?input.operations!:[input];
+  const conflicts=input.kind==='batch'?rejectBatchConflicts(steps,input.requestId):undefined;
   let state=p.state;const produced:string[]=[];const plans=[];
-  for(const raw of steps){
+  for(const [index,raw] of steps.entries()){
    const fromTags=raw.addTagIdsFrom??[];
-   if(input.kind==='batch'&&(!Array.isArray(fromTags)||fromTags.some(index=>!Number.isInteger(index)||index<0||index>=produced.length)))throw new Error('WRITE_VALIDATION_FAILED');
-   const step=input.kind==='batch'?{...raw,requestId:input.requestId,expectedServerSeq:input.expectedServerSeq,id:refValue(raw,'id','idFrom',produced),projectId:refValue(raw,'projectId','projectIdFrom',produced),parentId:refValue(raw,'parentId','parentIdFrom',produced),targetProjectId:refValue(raw,'targetProjectId','targetProjectIdFrom',produced),addTagIds:fromTags.length?[...(raw.addTagIds??[]),...fromTags.map(index=>produced[index])]:raw.addTagIds,idFrom:undefined,projectIdFrom:undefined,parentIdFrom:undefined,targetProjectIdFrom:undefined,addTagIdsFrom:undefined,operations:undefined}:raw;
+   if(input.kind==='batch'&&(!Array.isArray(fromTags)||fromTags.some(ref=>!Number.isInteger(ref)||ref<0||ref>=produced.length)))throw new Error('WRITE_VALIDATION_FAILED');
+   const step=input.kind==='batch'?{...raw,requestId:input.requestId,expectedServerSeq:input.expectedServerSeq,id:refValue(raw,'id','idFrom',produced),projectId:refValue(raw,'projectId','projectIdFrom',produced),parentId:refValue(raw,'parentId','parentIdFrom',produced),targetProjectId:refValue(raw,'targetProjectId','targetProjectIdFrom',produced),addTagIds:fromTags.length?[...(raw.addTagIds??[]),...fromTags.map(ref=>produced[ref])]:raw.addTagIds,idFrom:undefined,projectIdFrom:undefined,parentIdFrom:undefined,targetProjectIdFrom:undefined,addTagIdsFrom:undefined,operations:undefined}:raw;
+   conflicts?.note(index,raw,step,state);
    const plan=planOperation(step,state,official,now);
+   conflicts?.remember(index,raw,step,state,plan.bulkIds);
    plans.push(plan);produced.push(plan.taskId);state=plan.predicted;
   }
   const actionCount=plans.reduce((count,plan)=>count+plan.actions.length,0);
