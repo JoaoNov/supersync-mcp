@@ -15,6 +15,8 @@ update の未指定は保持。create の未指定は公式デフォルト。組
 
 Calendar days use the process timezone `TZ`, which defaults to Europe/Brussels. Date-times are absolute instants. Example: 2026-10-15 09:00 in Europe/Brussels is 1792047600000. Do not interpret a string with no time as a date-time. The logical day boundary is Super Productivity's `misc.startOfNextDayTime` / `startOfNextDay`, interpreted by the official function.
 
+`time_by_day` and `worklog_report` read `timeSpentOnDay` keys as they are stored. Those keys are already logical days: logging time without an explicit day uses this same offset, and the bridge cannot move an existing key onto another hour. Time after midnight and before the boundary is stored on the previous day, which is the day both tools report. The default Monday–Sunday week uses that account offset when `startOfNextDayTime` or the legacy `startOfNextDay` hour is present. When neither is present, `DAY_START_HOUR` (default 4) is the fallback, so 04:00 Europe/Brussels ends the previous working day. `DAY_START_HOUR` does not override an account setting and does not rewrite stored keys.
+
 予定変更は公式 unscheduleTask と Plan Task for Day / scheduleTaskWithTime、期限変更は setDeadline / removeDeadline を暗号化同期経由で送る。事前に同じ公式 reducer で全操作を検証する。通知は scheduleReminder / deadlineReminder で設定・解除する。未指定の通知は保持し、日時変更時は相対時刻を再計算する。詳しくは [TASK-REMINDERS.md](TASK-REMINDERS.md) を参照。ブラウザー Effects や独自の配信サービスは提供しない。
 
 TODAY は task.tagIds に追加しない。公式処理が TODAY の順序と Planner を更新する。今日の期限を指定したときは公式の自動計画ルールを適用するため、未計画／過去の予定は今日に移る場合がある。将来の明示的な予定と完了タスクは公式ルールで保持される。

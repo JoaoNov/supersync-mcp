@@ -14,9 +14,9 @@ import {planUndo} from './undo.js';
 const MAX_TRACKED_MS=1000*60*60*1000;
 const MAX_BATCH_OPERATIONS=20;
 const MAX_UPLOAD_OPS=100;
-type WriteFields=DateInput & {requestId?:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'estimate'|'create_tag'|'rename_tag'|'batch'|'undo';id?:string;changeId?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string;idFrom?:number;projectIdFrom?:number;parentIdFrom?:number;targetProjectIdFrom?:number;addTagIdsFrom?:number[]};
+type WriteFields=DateInput & {requestId?:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'set_time'|'estimate'|'create_tag'|'rename_tag'|'batch'|'undo';id?:string;changeId?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeSpent?:number;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string;idFrom?:number;projectIdFrom?:number;parentIdFrom?:number;targetProjectIdFrom?:number;addTagIdsFrom?:number[]};
 export type WriteInput=WriteFields & {requestId:string;operations?:WriteFields[]};
-const WRITE_KINDS=new Set(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','estimate','create_tag','rename_tag']);
+const WRITE_KINDS=new Set(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','set_time','estimate','create_tag','rename_tag']);
 function storedResult(row:any,serverSeq:number,replayed:boolean){
  const extra=row.summary?JSON.parse(String(row.summary)):{};
  return {taskId:String(row.taskId),serverSeq,requestId:row.requestId,replayed,...extra};
@@ -25,6 +25,21 @@ function refValue(op:WriteFields,field:'id'|'projectId'|'parentId'|'targetProjec
  if(op[from]===undefined)return op[field];
  if(op[field]!==undefined||!Number.isInteger(op[from])||op[from]!<0||op[from]!>=ids.length)throw new Error('WRITE_VALIDATION_FAILED');
  return ids[op[from]!];
+}
+function trackedBoxes(state:any){
+ return [['active',state?.tasks],['young',state?.archiveYoung?.task],['old',state?.archiveOld?.task]] as const;
+}
+function locateTask(state:any,id:string){
+ for(const [box,tasks] of trackedBoxes(state))if(tasks?.entities&&Object.hasOwn(tasks.entities,id)&&tasks.entities[id])return {box,task:tasks.entities[id]};
+}
+function copyDayMap(task:any){
+ const source=task?.timeSpentOnDay;
+ return source&&typeof source==='object'?{...source}:{};
+}
+function sumTimeSpent(map:any){
+ let total=0;
+ if(map&&typeof map==='object')for(const value of Object.values(map) as any[])if(value)total+=+value;
+ return total;
 }
 function tagTitle(state:any,title:string|undefined,ignoreId?:string){
  if(!title?.trim()||title!==title.trim()||title.length>200||/[\x00-\x1f]/.test(title)||title.toLowerCase()==='today')throw new Error('WRITE_VALIDATION_FAILED');
@@ -56,7 +71,7 @@ export function projectAction(official:any,state:any,title:string|undefined,id:s
 let queue:Promise<unknown>=Promise.resolve();
 export function writeTask(input:WriteInput){const result=queue.then(()=>perform(input));queue=result.catch(()=>{});return result;}
 export function initOutbox(db:ReturnType<typeof openStore>){db.exec('CREATE TABLE IF NOT EXISTS outbox(requestId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, taskId TEXT NOT NULL, status TEXT NOT NULL, serverSeq INTEGER, error TEXT, summary TEXT)');if(!db.prepare('PRAGMA table_info(outbox)').all().some((column:any)=>column.name==='summary'))db.exec('ALTER TABLE outbox ADD COLUMN summary TEXT');db.exec('CREATE TABLE IF NOT EXISTS change_log(requestId TEXT PRIMARY KEY, payload TEXT NOT NULL, logged INTEGER NOT NULL)');}
-function toolName(input:WriteInput){if(input.kind==='create')return input.parentId?'create_subtask':'create_task';const names:Record<string,string>={update:'update_task',complete:'complete_task',reopen:'reopen_task',tags:'update_task_tags',kanban:'set_task_kanban_status',delete:'delete_task',archive:'archive_done_tasks',move:'move_task',reorder:'reorder_subtask',detach:'detach_subtask',attach:'attach_task',time:'log_task_time',estimate:'set_task_estimate',create_tag:'create_tag',rename_tag:'rename_tag',create_project:'create_project',create_board:'create_board',update_board:'update_board',batch:'batch',undo:'undo_change'};return names[input.kind]??input.kind;}
+function toolName(input:WriteInput){if(input.kind==='create')return input.parentId?'create_subtask':'create_task';const names:Record<string,string>={update:'update_task',complete:'complete_task',reopen:'reopen_task',tags:'update_task_tags',kanban:'set_task_kanban_status',delete:'delete_task',archive:'archive_done_tasks',move:'move_task',reorder:'reorder_subtask',detach:'detach_subtask',attach:'attach_task',time:'log_task_time',set_time:'set_task_time',estimate:'set_task_estimate',create_tag:'create_tag',rename_tag:'rename_tag',create_project:'create_project',create_board:'create_board',update_board:'update_board',batch:'batch',undo:'undo_change'};return names[input.kind]??input.kind;}
 async function finishWrite(db:ReturnType<typeof openStore>,requestId:string,cfg:{baseUrl:string;accessToken:string},send:typeof fetch,onInvalidate:()=>void){
  const result=await submit(db,requestId,cfg,send,onInvalidate);
  const row=db.prepare('SELECT payload, logged FROM change_log WHERE requestId=?').get(requestId) as {payload:string;logged:number}|undefined;
@@ -179,6 +194,16 @@ function planOperation(input:WriteFields,state:any,official:any,now:number){
     if(task.parentId||parent.parentId||task.id===parent.id||task.subTaskIds?.length||task.repeatCfgId||task.issueId||task.issueProviderId||task.issueType||task.dueWithTime||task.reminderId||task.remindAt)throw new Error('INVALID_TASK_HIERARCHY');
     action={type:'[Task Shared] convertToSubTask',taskId,targetParentId:parentId,afterTaskId:input.afterTaskId??null};
    }
+  }else if(input.kind==='set_time'){
+   taskId=input.id!;
+   const found=locateTask(state,taskId);
+   if(!found)throw new Error('TASK_NOT_FOUND');
+   if(!Number.isInteger(input.timeSpent)||input.timeSpent!<0||input.timeSpent!>MAX_TRACKED_MS)throw new Error('WRITE_VALIDATION_FAILED');
+   const day=input.day;
+   if(!day||!validDay(day))throw new Error('WRITE_VALIDATION_FAILED');
+   const timeSpentOnDay=copyDayMap(found.task);
+   if(input.timeSpent===0)delete timeSpentOnDay[day];else timeSpentOnDay[day]=input.timeSpent;
+   action={type:'[Task Shared] updateTask',task:{id:taskId,changes:{timeSpentOnDay}},isIgnoreShortSyntax:true};
   }else if(input.kind==='time'||input.kind==='estimate'){
    taskId=input.id!;
    if(!taskId||!Object.hasOwn(state.tasks.entities,taskId)||!state.tasks.entities[taskId])throw new Error('TASK_NOT_FOUND');
@@ -238,6 +263,7 @@ function planOperation(input:WriteFields,state:any,official:any,now:number){
   for(const a of actions){
    const before=predicted.tasks?.entities[taskId];
    predicted=official.reduce(predicted,{...a,meta:{isRemote:true}});
+   if(input.kind==='set_time')predicted={...predicted,...applyArchive(predicted,a,now,official)};
    // Standard deadline auto-planning may clear an existing timed schedule.
    // Reject before enqueueing instead of silently losing its notification.
    if(a.type==='[Task Shared] setDeadline'&&before?.remindAt!=null&&predicted.tasks.entities[taskId]?.remindAt!==before.remindAt)throw new Error('REMINDER_SCHEDULE_CONFLICT');
@@ -254,7 +280,7 @@ function planOperation(input:WriteFields,state:any,official:any,now:number){
    const archived=applyArchive(predicted,action,now,official);
    predicted={...predicted,...archived};
    if(!bulkIds?.every(id=>!predicted.tasks.entities[id]&&predicted.archiveYoung.task.entities[id]?.isDone===true&&predicted.archiveYoung.task.entities[id].dueDay===undefined&&predicted.archiveYoung.task.entities[id].dueWithTime===undefined))throw new Error('WRITE_VALIDATION_FAILED');
-  }else if(!created)throw new Error('WRITE_VALIDATION_FAILED');
+  }else if(input.kind!=='set_time'&&!created)throw new Error('WRITE_VALIDATION_FAILED');
   if(input.kind==='move'){
    const target=input.targetProjectId!;
    const ids=[taskId,...(action.task.subTaskIds??[])];
@@ -275,7 +301,25 @@ function planOperation(input:WriteFields,state:any,official:any,now:number){
    const child=predicted.tasks.entities[taskId];
    if(child.parentId!==parentId||child.projectId!==predicted.tasks.entities[parentId].projectId||!predicted.tasks.entities[parentId].subTaskIds.includes(taskId)||predicted.projects.entities[child.projectId]?.taskIds?.includes(taskId))throw new Error('WRITE_VALIDATION_FAILED');
   }
-  if(input.kind==='time'){
+  if(input.kind==='set_time'){
+   const before=locateTask(state,taskId),after=locateTask(predicted,taskId);
+   if(!before||!after||before.box!==after.box)throw new Error('WRITE_VALIDATION_FAILED');
+   const day=input.day!;
+   const previous=copyDayMap(before.task),next=copyDayMap(after.task);
+   if(input.timeSpent===0?Object.hasOwn(next,day):next[day]!==input.timeSpent)throw new Error('WRITE_VALIDATION_FAILED');
+   for(const key of new Set([...Object.keys(previous),...Object.keys(next)]))if(key!==day&&previous[key]!==next[key])throw new Error('WRITE_VALIDATION_FAILED');
+   if(after.task.timeSpent!==sumTimeSpent(next)||after.task.timeEstimate!==before.task.timeEstimate||after.task.isDone!==before.task.isDone)throw new Error('WRITE_VALIDATION_FAILED');
+   if(before.task.parentId){
+    const parentBefore=locateTask(state,before.task.parentId),parentAfter=locateTask(predicted,before.task.parentId);
+    if(parentBefore?.box===before.box&&parentAfter?.box===before.box){
+     const delta=(input.timeSpent??0)-(Number(previous[day])||0);
+     const parentDays=copyDayMap(parentAfter.task);
+     const expected=(Number(copyDayMap(parentBefore.task)[day])||0)+delta;
+     if(expected>0?parentDays[day]!==expected:Object.hasOwn(parentDays,day))throw new Error('WRITE_VALIDATION_FAILED');
+     if(parentAfter.task.timeSpent!==(parentBefore.task.timeSpent??0)+delta)throw new Error('WRITE_VALIDATION_FAILED');
+    }
+   }
+  }else if(input.kind==='time'){
    const before=state.tasks.entities[taskId],after=predicted.tasks.entities[taskId];
    const spent=(value:any)=>Number(value?.timeSpentOnDay?.[action.date]??0);
    if(spent(after)!==spent(before)+action.duration||after.timeSpent!==(before.timeSpent??0)+action.duration)throw new Error('WRITE_VALIDATION_FAILED');
@@ -300,7 +344,7 @@ function planOperation(input:WriteFields,state:any,official:any,now:number){
   }
  return {kind:input.kind,taskId:taskId!,actions,bulkIds,predicted,isBoard,isTag};
 }
-const TASK_KINDS=new Set(['update','complete','reopen','tags','kanban','delete','move','reorder','detach','attach','time','estimate']);
+const TASK_KINDS=new Set(['update','complete','reopen','tags','kanban','delete','move','reorder','detach','attach','time','set_time','estimate']);
 function taskTree(state:any,id:string,seen=new Set<string>()):string[]{
  if(!id||seen.has(id))return [];
  seen.add(id);
@@ -333,7 +377,11 @@ function rejectBatchConflicts(operations:WriteFields[],batchRequestId:string){
  };
  return {note(index:number,op:WriteFields,step:WriteFields,state:any){
   const name=operationName(index,op);
-  if(TASK_KINDS.has(op.kind))requireId(state,index,op,'task',step.id,'');
+  if(op.kind==='set_time'){
+   if(!step.id)batchConflict(`${name} references a task id, which does not exist`);
+   else if(removed.has(step.id))batchConflict(`${name} uses task ${step.id}, ${removed.get(step.id)} by ${removedBy.get(step.id)}`);
+   else if(!locateTask(state,step.id))batchConflict(`${name} references task ${step.id}, which does not exist`);
+  }else if(TASK_KINDS.has(op.kind))requireId(state,index,op,'task',step.id,'');
   if(op.kind==='rename_tag')requireId(state,index,op,'tag',step.id,'');
   if(op.kind==='update_board')requireId(state,index,op,'board',step.id,'');
   if(op.kind==='create'||op.kind==='create_board')requireId(state,index,op,'project',step.projectId,'');

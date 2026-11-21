@@ -8,6 +8,7 @@ test('server config defaults to a local read-only listener and rejects unsafe va
  assert.equal(config.port,1901);
  assert.equal(config.allowWrites,false);
  assert.equal(config.timeZone,'Europe/Brussels');
+ assert.equal(config.dayStartHour,4);
  assert.equal(config.changeLogPath,'data/changes/changes.jsonl');
  assert.equal(config.changeLogMaxBytes,1024*1024);
  assert.deepEqual(config.allowedHosts,['127.0.0.1','localhost']);
@@ -16,10 +17,14 @@ test('server config defaults to a local read-only listener and rejects unsafe va
  assert.equal(custom.port,1902);
  assert.equal(custom.allowWrites,true);
  assert.equal(custom.timeZone,'UTC');
+ assert.equal(loadServerConfig({DAY_START_HOUR:'6'}).dayStartHour,6);
+ assert.equal(loadServerConfig({DAY_START_HOUR:''}).dayStartHour,4);
  assert.deepEqual(custom.allowedHosts,['tasks.internal','127.0.0.1','localhost']);
  assert.throws(()=>loadServerConfig({PORT:'0'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({MCP_ALLOW_WRITES:'maybe'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({TZ:'Not/AZone'}),/SERVER_CONFIG_INVALID/);
+ assert.throws(()=>loadServerConfig({DAY_START_HOUR:'24'}),/SERVER_CONFIG_INVALID/);
+ assert.throws(()=>loadServerConfig({DAY_START_HOUR:'4.5'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({LISTEN_HOST:''}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({CHANGE_LOG_PATH:'secrets/changes.jsonl'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({CHANGE_LOG_PATH:'data/changes/../access.key'}),/SERVER_CONFIG_INVALID/);

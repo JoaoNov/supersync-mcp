@@ -27,6 +27,7 @@ services:
       RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-120}"
       RATE_LIMIT_WINDOW_MS: "${RATE_LIMIT_WINDOW_MS:-60000}"
       TZ: "${TZ:-Europe/Brussels}"
+      DAY_START_HOUR: "${DAY_START_HOUR:-4}"
       CHANGE_LOG_PATH: "${CHANGE_LOG_PATH:-data/changes/changes.jsonl}"
       CHANGE_LOG_MAX_BYTES: "${CHANGE_LOG_MAX_BYTES:-1048576}"
     restart: unless-stopped

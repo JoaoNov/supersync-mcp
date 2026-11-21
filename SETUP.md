@@ -53,6 +53,9 @@ cp .env.example .env
 | `PORT` | `1901` | Port the Node process binds inside the container. |
 | `ALLOWED_HOSTS` | `127.0.0.1,localhost` | `Host` headers the MCP endpoint accepts. |
 | `TZ` | `Europe/Brussels` | Calendar timezone for today and due days. |
+| `DAY_START_HOUR` | `4` | Fallback hour for `time_by_day` and `worklog_report` when the account has no start-of-next-day setting. |
+| `CHANGE_LOG_PATH` | `data/changes/changes.jsonl` | Append-only write log. The path must stay under `data/changes/`. |
+| `CHANGE_LOG_MAX_BYTES` | `1048576` | Cap for the current log file. The previous file is kept as `.1`. |
 | `MCP_ALLOW_WRITES` | `false` | Set to `true` only when agents may change tasks. |
 
 `127.0.0.1` and `localhost` are always allowed, including with the listen port (`127.0.0.1:1901`). Add every other name or address a client will send in `Host`. The check is exact. `tasks.internal` also allows `tasks.internal:1901`.
@@ -85,11 +88,23 @@ The process does not authenticate clients by source IP. The published bind addre
 
 - Default: the port is on the host loopback only. Other machines cannot open it.
 - Private interface: set `MCP_BIND_ADDRESS` to that address. On the host, allow the port only from the addresses that should call it, and drop it on every public interface.
-- If you use Tailscale, that is one way to get a private address. It is not configured by this repository. Two workable layouts:
-  - Leave the publish on `127.0.0.1:1901` and proxy it onto the tailnet, for example `tailscale serve --bg --https=443 http://127.0.0.1:1901`.
-  - Or set `MCP_BIND_ADDRESS` to the Tailscale address of this host and do not run `tailscale serve`.
-- Tailscale ACL: allow only your own devices to this host's port (or to port 443 if you use `tailscale serve`). Do not enable Funnel, which would publish the port on the public internet. A client still needs the bearer key; the ACL is the network boundary, not a replacement for the key.
-- Add the name clients will use (`<host>.ts.net`, or the Tailscale IP) to `ALLOWED_HOSTS`, then recreate the container.
+- Add every non-loopback name a client sends in `Host` to `ALLOWED_HOSTS`, then recreate the container.
+
+### Cloudflare Tunnel
+
+Keep `MCP_BIND_ADDRESS=127.0.0.1`. Point the tunnel hostname, such as `https://mcp.example.com`, at `http://127.0.0.1:1901`. Set `ALLOWED_HOSTS=mcp.example.com` and recreate the container. Put the hostname behind Cloudflare Access and send the service-token headers with the bearer key:
+
+```http
+POST /mcp HTTP/1.1
+Host: mcp.example.com
+CF-Access-Client-Id: <service token client id>
+CF-Access-Client-Secret: <service token secret>
+Authorization: Bearer <key from secrets/access.key>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+```
+
+The service token does not replace the bearer key. The same headers are shown in the README.
 
 ## 6. Optional egress limit
 
@@ -120,6 +135,6 @@ Accept: application/json, text/event-stream
 
 The key is the contents of `secrets/access.key` without the trailing newline. A wrong or missing key returns `401`. A `Host` value outside `ALLOWED_HOSTS` returns `403`. More than `RATE_LIMIT_MAX` requests from one client address in the window returns `429`. A proxy on this machine presents every client as `127.0.0.1`, so those clients share one limit.
 
-With `MCP_ALLOW_WRITES` left false, `tools/list` returns the seven read tools. `create_task` and the other write tools are not registered, and calling them does nothing to the account. Set `MCP_ALLOW_WRITES=true` and recreate the container to enable them.
+With `MCP_ALLOW_WRITES` left false, `tools/list` returns the 13 read tools, including `time_by_day`, `worklog_report`, and `list_changes`. Write tools are not registered. Set `MCP_ALLOW_WRITES=true` and recreate the container to enable them. The full list is in the README. Docker Compose mounts the named volume `changes` at `data/changes` so the write log survives a new container.
 
 There is no login flow and no refresh token. Put the same bearer value in the client's HTTP header configuration. Rotate the key by replacing the file, recreating `mcp`, and updating the client.

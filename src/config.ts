@@ -23,6 +23,7 @@ const serverSchema=z.object({
  rateLimitMax:z.coerce.number().int().min(1).max(100_000),
  rateLimitWindowMs:z.coerce.number().int().min(1000).max(3_600_000),
  timeZone:z.string().min(1),
+ dayStartHour:z.coerce.number().int().min(0).max(23),
  changeLogPath:z.string().regex(/^data\/changes\/[A-Za-z0-9._-]+$/),
  changeLogMaxBytes:z.coerce.number().int().min(256).max(32*1024*1024),
 });
@@ -37,6 +38,7 @@ export function loadServerConfig(env:NodeJS.ProcessEnv=process.env){
   rateLimitMax:env.RATE_LIMIT_MAX??120,
   rateLimitWindowMs:env.RATE_LIMIT_WINDOW_MS??60_000,
   timeZone:(env.TZ??'').trim()||'Europe/Brussels',
+  dayStartHour:env.DAY_START_HOUR===undefined||env.DAY_START_HOUR===''?4:env.DAY_START_HOUR,
   changeLogPath:env.CHANGE_LOG_PATH||'data/changes/changes.jsonl',
   changeLogMaxBytes:env.CHANGE_LOG_MAX_BYTES||1024*1024,
  });

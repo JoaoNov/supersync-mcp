@@ -8,7 +8,7 @@ test('MCP initialize/list/call exposes only read tools and excludes unrelated co
  const client=new Client({name:'test',version:'1'});
  const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(a);await client.connect(b);
  try{
-  const tools=await client.listTools();assert.equal(tools.tools.length,11);assert.ok(tools.tools.some(t=>t.name==='search_tasks'));assert.ok(tools.tools.some(t=>t.name==='list_today'));assert.ok(tools.tools.some(t=>t.name==='get_task_time'));assert.ok(tools.tools.some(t=>t.name==='list_changes'));assert.ok(tools.tools.every(t=>t.annotations?.readOnlyHint));
+  const tools=await client.listTools();assert.equal(tools.tools.length,13);assert.ok(tools.tools.some(t=>t.name==='search_tasks'));assert.ok(tools.tools.some(t=>t.name==='list_today'));assert.ok(tools.tools.some(t=>t.name==='get_task_time'));assert.ok(tools.tools.some(t=>t.name==='time_by_day'));assert.ok(tools.tools.some(t=>t.name==='worklog_report'));assert.ok(tools.tools.some(t=>t.name==='list_changes'));assert.ok(tools.tools.every(t=>t.annotations?.readOnlyHint));
   const result=await client.callTool({name:'list_projects',arguments:{}});
   assert.ok(!JSON.stringify(result).includes('hidden'));
   const task=await client.callTool({name:'get_task',arguments:{id:'t'}});
