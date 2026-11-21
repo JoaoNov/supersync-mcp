@@ -1,6 +1,6 @@
 # Board API 0.3.0（公開前レビュー済み）
 
-The current tool list, including `time_by_day`, is in the README. The counts in this file describe the board-tool review, not the server as it is now.
+The current tool list, including `time_by_day` and `worklog_report`, is in the README. The counts in this file describe the board-tool review, not the server as it is now.
 
 
 0.3.0のツール・引数・制約と、旧専用APIからの切替条件を記載します。

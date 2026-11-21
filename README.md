@@ -8,11 +8,11 @@ One process serves one bearer key and one SuperSync account. Reads are available
 
 ## Tools
 
-Version 0.3.0 defines 31 tools. With writes off, only the 11 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 32 tools. With writes off, only the 12 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 | Kind | Tools |
 |---|---|
-| Status and lookup | `get_sync_status` / `list_tasks` / `search_tasks` / `list_today` / `get_task` / `get_task_time` / `time_by_day` |
+| Status and lookup | `get_sync_status` / `list_tasks` / `search_tasks` / `list_today` / `get_task` / `get_task_time` / `time_by_day` / `worklog_report` |
 | Lists | `list_projects` / `list_tags` / `list_archived_tasks` |
 | Boards | `get_board` |
 | Create and edit | `create_task` / `create_subtask` / `update_task` / `reorder_subtask` / `detach_subtask` / `attach_task` |
@@ -34,6 +34,7 @@ Read tools:
 - `get_task` returns one task, including an archived task. A missing id returns null.
 - `get_task_time` returns time spent, the estimate, and the per-day worklog for one active or archived task.
 - `time_by_day` returns tracked time for an inclusive `YYYY-MM-DD` range in one call. Omit both dates for the current Monday–Sunday week. Totals count leaf `timeSpentOnDay` only, including archived tasks, so a parent that also stores its subtasks' time is not added again. Day keys are the app's logical days and are not split again by hour. The default week uses the account `startOfNextDayTime` when that setting exists. When neither that field nor the legacy `startOfNextDay` hour is present, `DAY_START_HOUR` (default 4) ends the working day at 04:00 in `TZ`. An explicit account offset, including midnight or a value other than 4, wins over `DAY_START_HOUR`.
+- `worklog_report` uses that same range, boundary, and leaf selection. `groupBy` is any combination of `day`, `project`, and `task`; the default is all three. Every group has `totalMs` and `hours`, and the result has the same two fields for the whole range. Hours are rounded to two decimals from the milliseconds, so the sum of the rounded group hours can differ from the rounded grand total. A `day`-only report includes days with zero time. Other groupings list only groups that have time. Time logged after midnight and before the day boundary is already stored on the previous logical day. The report reads that key and does not split a stored day by clock hour.
 - `get_board` returns one board, its columns, and card order.
 
 Write tools, registered only when writes are on:
@@ -97,7 +98,7 @@ docker compose up -d mcp
 | `ALLOWED_HOSTS` | `Host` values accepted for DNS-rebinding protection. `127.0.0.1` and `localhost` are always included. |
 | `MCP_ALLOW_WRITES` | Default `false`. Write tools are registered only when this is `true`. |
 | `TZ` | Timezone for calendar days. Default `Europe/Brussels`. |
-| `DAY_START_HOUR` | Fallback hour for `time_by_day` when the account has no start-of-next-day setting. Default `4`. It does not move stored day keys and does not override an account setting. |
+| `DAY_START_HOUR` | Fallback hour for `time_by_day` and `worklog_report` when the account has no start-of-next-day setting. Default `4`. It does not move stored day keys and does not override an account setting. |
 | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` | Per-client-address limit. Default 120 requests per 60 seconds. |
 | `secrets/access.key` | Bearer key, mode `0600`. A trailing newline is ignored. `ACCESS_KEY` is accepted when the file is absent. |
 | `secrets/supersync.json` | SuperSync URL, access token, and encryption password. Mode `0600`. |
@@ -123,7 +124,7 @@ Accept: application/json, text/event-stream
 
 A wrong or missing key returns `401`. A `Host` value outside `ALLOWED_HOSTS` returns `403`. Too many requests from one client address return `429`. A proxy on this machine presents its clients as `127.0.0.1`, so they share one rate-limit bucket.
 
-With writes left off, `tools/list` returns the 11 read tools. Set `MCP_ALLOW_WRITES=true` and recreate the container to register the write tools.
+With writes left off, `tools/list` returns the 12 read tools. Set `MCP_ALLOW_WRITES=true` and recreate the container to register the write tools.
 
 ## Cloudflare Tunnel
 
