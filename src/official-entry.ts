@@ -49,3 +49,5 @@ export {getStartOfNextDayDiffMs} from '../vendor-source/src/app/util/start-of-ne
 export {selectAllTasksWithReminder,selectAllTasksWithDeadlineReminder,selectUndoneOverdue,selectUndoneOverdueDeadlineTasks} from '../vendor-source/src/app/features/tasks/store/task.selectors';
 export {selectAllTasksDueToday} from '../vendor-source/src/app/features/planner/store/planner.selectors';
 export {millisecondsDiffToRemindOption,remindOptionToMilliseconds} from '../vendor-source/src/app/features/tasks/util/remind-option-to-milliseconds';
+export {EMPTY_SIMPLE_COUNTER,DEFAULT_SIMPLE_COUNTERS} from '../vendor-source/src/app/features/simple-counter/simple-counter.const';
+export {getSimpleCounterStreakDuration} from '../vendor-source/src/app/features/simple-counter/get-simple-counter-streak-duration';

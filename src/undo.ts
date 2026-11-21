@@ -1,6 +1,7 @@
 import {applyArchive} from './archive.js';
 import {collectionView,sameSnapshot,taskView,type ChangeEntity,type ChangeEntry} from './change-log.js';
 import {dateState} from './dates.js';
+const HABIT_CFG_KEYS=['title','type','isEnabled','isHideButton','icon','isTrackStreaks','streakMinValue','streakMode','streakWeekDays','streakWeeklyFrequency','countdownDuration'] as const;
 const RESTORE=['title','notes','isDone','doneOn','projectId','tagIds','timeEstimate','timeSpentOnDay','dueDay','dueWithTime','deadlineDay','deadlineWithTime'] as const;
 function conflict(entity:ChangeEntity):never{throw new Error(`UNDO_CONFLICT: ${entity.entityType} ${entity.id} changed since this entry`);}
 function assertCurrent(state:any,entity:ChangeEntity){
@@ -73,6 +74,18 @@ export function planUndo(entry:ChangeEntry,state:any,official:any,now:number){
  }
  for(const entity of entry.entities.filter(item=>item.entityType==='project')){
   if(!entity.before&&entity.after)actions.push({type:'[Task Shared] deleteProject',projectId:entity.id,noteIds:[],allTaskIds:Array.isArray(entity.after.taskIds)?entity.after.taskIds:[]});
+ }
+ for(const entity of entry.entities.filter(item=>item.entityType==='habit')){
+  const before=entity.before,after=entity.after;
+  if(!before&&after)actions.push({type:'[SimpleCounter] Delete SimpleCounter',id:entity.id,simpleCounter:{...after,isOn:false}});
+  else if(before&&!after)actions.push({type:'[SimpleCounter] Add SimpleCounter',simpleCounter:{...before,countOnDay:{...(before.countOnDay as Record<string,number>??{})},isOn:false}});
+  else if(before&&after){
+   const changes:Record<string,unknown>={};
+   for(const key of HABIT_CFG_KEYS)if(!sameSnapshot(before[key],after[key]))changes[key]=before[key]===undefined?null:before[key];
+   if(Object.keys(changes).length)actions.push({type:'[SimpleCounter] Update SimpleCounter',simpleCounter:{id:entity.id,changes}});
+   const was=(before.countOnDay??{}) as Record<string,number>,now=(after.countOnDay??{}) as Record<string,number>;
+   for(const day of [...new Set([...Object.keys(was),...Object.keys(now)])].sort())if((was[day]??0)!==(now[day]??0))actions.push({type:'[Simple Counter] Set SimpleCounter Counter For Date',id:entity.id,date:day,newVal:was[day]??0});
+  }
  }
  if(!actions.length)throw new Error('UNDO_UNSUPPORTED');
  if(actions.some(action=>!official.KNOWN_ACTION_TYPES.has(action.type)))throw new Error('UNDO_UNSUPPORTED');
