@@ -6,7 +6,15 @@ const TASK_KEYS=['id','title','notes','isDone','doneOn','projectId','parentId','
 const PROJECT_KEYS=['id','title','isArchived','taskIds','backlogTaskIds'];
 const TAG_KEYS=['id','title','color','taskIds'];
 const BOARD_KEYS=['id','title','cols','panels'];
-export type ChangeEntity={entityType:'task'|'project'|'tag'|'board';id:string;boxBefore:string|null;boxAfter:string|null;before:Record<string,unknown>|null;after:Record<string,unknown>|null};
+// isOn is device-local in Super Productivity and never synced, so it is not logged.
+const HABIT_KEYS=['id','title','type','isEnabled','isHideButton','icon','isTrackStreaks','streakMinValue','streakMode','streakWeekDays','streakWeeklyFrequency','countdownDuration','countOnDay'];
+// A day set to 0 and a missing day mean the same thing; the reducer has no way to remove a day.
+function habitSnapshot(source:any){
+ const out=pick(source,HABIT_KEYS);
+ if(out){for(const key of Object.keys(out))if(out[key]===null)delete out[key];const days:Record<string,number>={};for(const [day,value] of Object.entries(source?.countOnDay??{}))if(typeof value==='number'&&value>0)days[day]=value;out.countOnDay=days;}
+ return out;
+}
+export type ChangeEntity={entityType:'task'|'project'|'tag'|'board'|'habit';id:string;boxBefore:string|null;boxAfter:string|null;before:Record<string,unknown>|null;after:Record<string,unknown>|null};
 export type ChangeEntry={id:string;at?:string;tool:string;requestId:string;serverSeqBefore:number;serverSeqAfter?:number;entities:ChangeEntity[]};
 function stable(value:unknown):string{
  if(Array.isArray(value))return '['+value.map(stable).join(',')+']';
@@ -37,14 +45,16 @@ export function diffEntities(before:any,after:any):ChangeEntity[]{
   if(stable(previous)===stable(next)&&(left?.box??null)===(right?.box??null))continue;
   entities.push({entityType:'task',id,boxBefore:left?.box??null,boxAfter:right?.box??null,before:previous,after:next});
  }
- const collections:{entityType:'project'|'tag'|'board';keys:string[];read:(state:any)=>any[]}[]=[
+ const collections:{entityType:'project'|'tag'|'board'|'habit';keys:string[];read:(state:any)=>any[]}[]=[
   {entityType:'project',keys:PROJECT_KEYS,read:s=>Object.values(s?.projects?.entities??{})},
   {entityType:'tag',keys:TAG_KEYS,read:s=>Object.values(s?.tag?.entities??{})},
   {entityType:'board',keys:BOARD_KEYS,read:s=>s?.boards?.boardCfgs??[]},
+  {entityType:'habit',keys:HABIT_KEYS,read:s=>Object.values(s?.simpleCounter?.entities??{})},
  ];
  for(const collection of collections){
-  const previous=new Map(collection.read(before).filter((item:any)=>item?.id).map((item:any)=>[item.id,pick(item,collection.keys)]));
-  const next=new Map(collection.read(after).filter((item:any)=>item?.id).map((item:any)=>[item.id,pick(item,collection.keys)]));
+  const snap=(item:any)=>collection.entityType==='habit'?habitSnapshot(item):pick(item,collection.keys);
+  const previous=new Map(collection.read(before).filter((item:any)=>item?.id).map((item:any)=>[item.id,snap(item)]));
+  const next=new Map(collection.read(after).filter((item:any)=>item?.id).map((item:any)=>[item.id,snap(item)]));
   for(const id of new Set([...previous.keys(),...next.keys()])){
    if(stable(previous.get(id)??null)===stable(next.get(id)??null))continue;
    entities.push({entityType:collection.entityType,id,boxBefore:null,boxAfter:null,before:previous.get(id)??null,after:next.get(id)??null});
@@ -54,7 +64,8 @@ export function diffEntities(before:any,after:any):ChangeEntity[]{
 }
 export function sameSnapshot(left:unknown,right:unknown){return stable(left)===stable(right);}
 export function taskView(state:any,id:string){const found=locateTask(state,id);return found?{box:found.box,snapshot:pick(found.value,TASK_KEYS)}:null;}
-export function collectionView(state:any,entityType:'project'|'tag'|'board',id:string){
+export function collectionView(state:any,entityType:'project'|'tag'|'board'|'habit',id:string){
+ if(entityType==='habit'){const entities=state?.simpleCounter?.entities;return entities&&Object.hasOwn(entities,id)&&entities[id]?habitSnapshot(entities[id]):null;}
  const keys=entityType==='project'?PROJECT_KEYS:entityType==='tag'?TAG_KEYS:BOARD_KEYS;
  const values=entityType==='project'?Object.values(state?.projects?.entities??{}):entityType==='tag'?Object.values(state?.tag?.entities??{}):state?.boards?.boardCfgs??[];
  const found=(values as any[]).find(item=>item?.id===id);

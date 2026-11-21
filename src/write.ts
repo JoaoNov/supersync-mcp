@@ -11,12 +11,13 @@ import {dateActions,dateContext,dateState,hasDates,validDay,validateDates,type D
 import {applyArchive} from './archive.js';
 import {appendChange,diffEntities,findChange} from './change-log.js';
 import {planUndo} from './undo.js';
+import {HABIT_KINDS,isHabitAction,planHabit,type HabitCfgInput} from './habits.js';
 const MAX_TRACKED_MS=1000*60*60*1000;
 const MAX_BATCH_OPERATIONS=20;
 const MAX_UPLOAD_OPS=100;
-type WriteFields=DateInput & {requestId?:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'set_time'|'estimate'|'create_tag'|'rename_tag'|'batch'|'undo';id?:string;changeId?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeSpent?:number;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string;idFrom?:number;projectIdFrom?:number;parentIdFrom?:number;targetProjectIdFrom?:number;addTagIdsFrom?:number[]};
+type WriteFields=DateInput & HabitCfgInput & {value?:number;values?:{day:string;value:number}[];by?:number;requestId?:string;kind:'create_habit'|'update_habit'|'delete_habit'|'set_habit'|'increment_habit'|'toggle_habit'|'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'set_time'|'estimate'|'create_tag'|'rename_tag'|'batch'|'undo';id?:string;changeId?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeSpent?:number;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string;idFrom?:number;projectIdFrom?:number;parentIdFrom?:number;targetProjectIdFrom?:number;addTagIdsFrom?:number[]};
 export type WriteInput=WriteFields & {requestId:string;operations?:WriteFields[]};
-const WRITE_KINDS=new Set(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','set_time','estimate','create_tag','rename_tag']);
+const WRITE_KINDS=new Set(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','set_time','estimate','create_tag','rename_tag',...HABIT_KINDS]);
 function storedResult(row:any,serverSeq:number,replayed:boolean){
  const extra=row.summary?JSON.parse(String(row.summary)):{};
  return {taskId:String(row.taskId),serverSeq,requestId:row.requestId,replayed,...extra};
@@ -71,7 +72,7 @@ export function projectAction(official:any,state:any,title:string|undefined,id:s
 let queue:Promise<unknown>=Promise.resolve();
 export function writeTask(input:WriteInput){const result=queue.then(()=>perform(input));queue=result.catch(()=>{});return result;}
 export function initOutbox(db:ReturnType<typeof openStore>){db.exec('CREATE TABLE IF NOT EXISTS outbox(requestId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, taskId TEXT NOT NULL, status TEXT NOT NULL, serverSeq INTEGER, error TEXT, summary TEXT)');if(!db.prepare('PRAGMA table_info(outbox)').all().some((column:any)=>column.name==='summary'))db.exec('ALTER TABLE outbox ADD COLUMN summary TEXT');db.exec('CREATE TABLE IF NOT EXISTS change_log(requestId TEXT PRIMARY KEY, payload TEXT NOT NULL, logged INTEGER NOT NULL)');}
-function toolName(input:WriteInput){if(input.kind==='create')return input.parentId?'create_subtask':'create_task';const names:Record<string,string>={update:'update_task',complete:'complete_task',reopen:'reopen_task',tags:'update_task_tags',kanban:'set_task_kanban_status',delete:'delete_task',archive:'archive_done_tasks',move:'move_task',reorder:'reorder_subtask',detach:'detach_subtask',attach:'attach_task',time:'log_task_time',set_time:'set_task_time',estimate:'set_task_estimate',create_tag:'create_tag',rename_tag:'rename_tag',create_project:'create_project',create_board:'create_board',update_board:'update_board',batch:'batch',undo:'undo_change'};return names[input.kind]??input.kind;}
+function toolName(input:WriteInput){if(input.kind==='create')return input.parentId?'create_subtask':'create_task';if(input.kind==='set_habit')return input.values!==undefined?'set_habit_values':'set_habit_value';if(input.kind==='toggle_habit')return 'toggle_habit_day';const names:Record<string,string>={update:'update_task',complete:'complete_task',reopen:'reopen_task',tags:'update_task_tags',kanban:'set_task_kanban_status',delete:'delete_task',archive:'archive_done_tasks',move:'move_task',reorder:'reorder_subtask',detach:'detach_subtask',attach:'attach_task',time:'log_task_time',set_time:'set_task_time',estimate:'set_task_estimate',create_tag:'create_tag',rename_tag:'rename_tag',create_project:'create_project',create_board:'create_board',update_board:'update_board',batch:'batch',undo:'undo_change'};return names[input.kind]??input.kind;}
 async function finishWrite(db:ReturnType<typeof openStore>,requestId:string,cfg:{baseUrl:string;accessToken:string},send:typeof fetch,onInvalidate:()=>void){
  const result=await submit(db,requestId,cfg,send,onInvalidate);
  const row=db.prepare('SELECT payload, logged FROM change_log WHERE requestId=?').get(requestId) as {payload:string;logged:number}|undefined;
@@ -114,6 +115,10 @@ export async function submit(db:ReturnType<typeof openStore>,requestId:string,cf
  return storedResult(row,result.serverSeq!,false);
 }
 function planOperation(input:WriteFields,state:any,official:any,now:number){
+ if(HABIT_KINDS.has(input.kind)){
+  const habit=planHabit(input,state,official,now);
+  return {kind:input.kind,taskId:habit.taskId,actions:habit.actions,bulkIds:undefined,predicted:habit.predicted,isBoard:false,isTag:false};
+ }
  let taskId:string,action:any,bulkIds:string[]|undefined;
   if(input.kind==='update_board'){
    taskId=input.id!;
@@ -373,8 +378,8 @@ function rejectBatchConflicts(operations:WriteFields[],batchRequestId:string){
    requestIds.set(op.requestId,name);
   }
  }
- const has=(state:any,collection:'task'|'project'|'tag'|'board',id:string)=>collection==='task'?Object.hasOwn(state.tasks?.entities??{},id)&&!!state.tasks.entities[id]:collection==='project'?Object.hasOwn(state.projects?.entities??{},id)&&!!state.projects.entities[id]:collection==='tag'?Object.hasOwn(state.tag?.entities??{},id)&&!!state.tag.entities[id]:!!state.boards?.boardCfgs?.some((board:any)=>board.id===id);
- const requireId=(state:any,index:number,op:WriteFields,collection:'task'|'project'|'tag'|'board',id:string|undefined,role:string)=>{
+ const has=(state:any,collection:'task'|'project'|'tag'|'board'|'habit',id:string)=>collection==='habit'?Object.hasOwn(state.simpleCounter?.entities??{},id)&&!!state.simpleCounter.entities[id]:collection==='task'?Object.hasOwn(state.tasks?.entities??{},id)&&!!state.tasks.entities[id]:collection==='project'?Object.hasOwn(state.projects?.entities??{},id)&&!!state.projects.entities[id]:collection==='tag'?Object.hasOwn(state.tag?.entities??{},id)&&!!state.tag.entities[id]:!!state.boards?.boardCfgs?.some((board:any)=>board.id===id);
+ const requireId=(state:any,index:number,op:WriteFields,collection:'task'|'project'|'tag'|'board'|'habit',id:string|undefined,role:string)=>{
   const name=operationName(index,op);
   if(!id)batchConflict(`${name} references a ${collection} id${role}, which does not exist`);
   const earlier=removed.get(id);
@@ -389,6 +394,7 @@ function rejectBatchConflicts(operations:WriteFields[],batchRequestId:string){
    else if(!locateTask(state,step.id))batchConflict(`${name} references task ${step.id}, which does not exist`);
   }else if(TASK_KINDS.has(op.kind))requireId(state,index,op,'task',step.id,'');
   if(op.kind==='rename_tag')requireId(state,index,op,'tag',step.id,'');
+  if(HABIT_KINDS.has(op.kind)&&op.kind!=='create_habit')requireId(state,index,op,'habit',step.id,'');
   if(op.kind==='update_board')requireId(state,index,op,'board',step.id,'');
   if(op.kind==='create'||op.kind==='create_board')requireId(state,index,op,'project',step.projectId,'');
   if(step.parentId!==undefined)requireId(state,index,op,'task',step.parentId,' as parent');
@@ -400,6 +406,7 @@ function rejectBatchConflicts(operations:WriteFields[],batchRequestId:string){
  },remember(index:number,op:WriteFields,step:WriteFields,state:any,bulkIds?:string[]){
   const name=operationName(index,op);
   if(op.kind==='delete'&&step.id)for(const id of taskTree(state,step.id)){removed.set(id,'deleted');removedBy.set(id,name);}
+  if(op.kind==='delete_habit'&&step.id){removed.set(step.id,'deleted');removedBy.set(step.id,name);}
   if(op.kind==='archive')for(const id of bulkIds??[]){removed.set(id,'archived');removedBy.set(id,name);}
   if(op.kind==='complete'&&step.id)completed.set(step.id,name);
   if(op.kind==='reopen'&&step.id)completed.delete(step.id);
@@ -459,8 +466,9 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   // Archive is the official bulk moveToArchive op: entityIds lists every parent
   // and cascaded subtask so a concurrent subtask edit cannot resurrect it.
   // Other writes still send entityId only.
-  const undoType=plan.kind==='undo'?(a.type.startsWith('[Tag]')?'TAG':a.type.startsWith('[Project]')||a.type.includes('deleteProject')?'PROJECT':'TASK'):undefined;
-  ops.push({id:official.uuidv7(),clientId,actionType:type,opType:plan.kind==='undo'?(a.type.includes('delete')||a.type.includes('Delete')?'DEL':'UPD'):plan.kind==='delete'?'DEL':plan.kind==='reorder'?'MOV':index===0&&plan.kind.startsWith('create')?'CRT':'UPD',entityType:undoType??(type.startsWith('[Planner]')?'PLANNER':plan.isBoard?'BOARD':plan.kind==='create_project'?'PROJECT':plan.isTag?'TAG':'TASK'),entityId:plan.taskId,...(plan.kind==='archive'?{entityIds:plan.bulkIds}:{}),payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+clockIndex},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION});
+  const habit=isHabitAction(type);
+  const undoType=habit?'SIMPLE_COUNTER':plan.kind==='undo'?(a.type.startsWith('[Tag]')?'TAG':a.type.startsWith('[Project]')||a.type.includes('deleteProject')?'PROJECT':'TASK'):undefined;
+  ops.push({id:official.uuidv7(),clientId,actionType:type,opType:habit?(type==='[SimpleCounter] Add SimpleCounter'?'CRT':type==='[SimpleCounter] Delete SimpleCounter'?'DEL':'UPD'):plan.kind==='undo'?(a.type.includes('delete')||a.type.includes('Delete')?'DEL':'UPD'):plan.kind==='delete'?'DEL':plan.kind==='reorder'?'MOV':index===0&&plan.kind.startsWith('create')?'CRT':'UPD',entityType:undoType??(type.startsWith('[Planner]')?'PLANNER':plan.isBoard?'BOARD':plan.kind==='create_project'?'PROJECT':plan.isTag?'TAG':'TASK'),entityId:plan.taskId,...(plan.kind==='archive'?{entityIds:plan.bulkIds}:{}),payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+clockIndex},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION});
   clockIndex++;
   }
   const summary=input.kind==='batch'||plans.some(plan=>plan.bulkIds)?{...(input.kind==='batch'?{operations:plans.map((plan,index)=>({index,kind:plan.kind,taskId:plan.taskId,...(plan.bulkIds?{archivedTaskIds:plan.bulkIds}:{})}))}:{}),...(plans.length===1&&plans[0].bulkIds?{archivedTaskIds:plans[0].bulkIds}:{})}:undefined;
