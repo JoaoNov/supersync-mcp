@@ -15,10 +15,17 @@ services:
 
   mcp:
     image: node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
-    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    # Root for the entrypoint only. It chowns the changes volume, then setpriv
+    # runs the server as LOCAL_UID with no capabilities. A named volume is
+    # root-owned until that chown, which is why writes returned CHANGE_LOG_FAILED
+    # after the upload had already been accepted.
+    user: "0:0"
     working_dir: /workspace
+    entrypoint: ["/bin/sh", "/workspace/docker/mcp-entrypoint.sh"]
     command: ["node", "--import", "tsx", "src/server.ts"]
     environment:
+      LOCAL_UID: "${LOCAL_UID:-1000}"
+      LOCAL_GID: "${LOCAL_GID:-1000}"
       LISTEN_HOST: "${LISTEN_HOST:-0.0.0.0}"
       PORT: "${PORT:-1901}"
       MCP_ALLOW_WRITES: "${MCP_ALLOW_WRITES:-false}"
@@ -46,6 +53,7 @@ services:
       - ./secrets/supersync.json:/workspace/secrets/supersync.json:ro
       - ./secrets/accounts.json:/workspace/secrets/accounts.json:ro
       - ./secrets/access.key:/workspace/secrets/access.key:ro
+      - ./docker/mcp-entrypoint.sh:/workspace/docker/mcp-entrypoint.sh:ro
       - ./data:/workspace/data
       - changes:/workspace/data/changes
     read_only: true
@@ -55,6 +63,7 @@ services:
     cpus: "1.0"
     pids_limit: 128
     cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER]
     security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||1901)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
