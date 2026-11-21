@@ -9,10 +9,12 @@ import {officialModule} from './projection.js';
 import {boardAction,boardUpdateAction,type BoardColumn,type BoardUpdate} from './boards.js';
 import {dateActions,dateContext,dateState,hasDates,validDay,validateDates,type DateInput} from './dates.js';
 import {applyArchive} from './archive.js';
+import {appendChange,diffEntities,findChange} from './change-log.js';
+import {planUndo} from './undo.js';
 const MAX_TRACKED_MS=1000*60*60*1000;
 const MAX_BATCH_OPERATIONS=20;
 const MAX_UPLOAD_OPS=100;
-type WriteFields=DateInput & {requestId?:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'estimate'|'create_tag'|'rename_tag'|'batch';id?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string;idFrom?:number;projectIdFrom?:number;parentIdFrom?:number;targetProjectIdFrom?:number;addTagIdsFrom?:number[]};
+type WriteFields=DateInput & {requestId?:string;kind:'create'|'create_project'|'create_board'|'update_board'|'update'|'complete'|'reopen'|'tags'|'kanban'|'delete'|'archive'|'move'|'reorder'|'detach'|'attach'|'time'|'estimate'|'create_tag'|'rename_tag'|'batch'|'undo';id?:string;changeId?:string;expectedServerSeq?:number;projectId?:string;parentId?:string;title?:string;notes?:string;color?:string;addTagIds?:string[];removeTagIds?:string[];status?:'todo'|'in_progress'|'done';direction?:'up'|'down'|'top'|'bottom';afterTaskId?:string|null;duration?:number;day?:string;timeEstimate?:number;columns?:BoardColumn[]|BoardUpdate['columns'];cols?:number;confirm?:boolean;targetProjectId?:string;idFrom?:number;projectIdFrom?:number;parentIdFrom?:number;targetProjectIdFrom?:number;addTagIdsFrom?:number[]};
 export type WriteInput=WriteFields & {requestId:string;operations?:WriteFields[]};
 const WRITE_KINDS=new Set(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','estimate','create_tag','rename_tag']);
 function storedResult(row:any,serverSeq:number,replayed:boolean){
@@ -53,7 +55,18 @@ export function projectAction(official:any,state:any,title:string|undefined,id:s
 }
 let queue:Promise<unknown>=Promise.resolve();
 export function writeTask(input:WriteInput){const result=queue.then(()=>perform(input));queue=result.catch(()=>{});return result;}
-export function initOutbox(db:ReturnType<typeof openStore>){db.exec('CREATE TABLE IF NOT EXISTS outbox(requestId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, taskId TEXT NOT NULL, status TEXT NOT NULL, serverSeq INTEGER, error TEXT, summary TEXT)');if(!db.prepare('PRAGMA table_info(outbox)').all().some((column:any)=>column.name==='summary'))db.exec('ALTER TABLE outbox ADD COLUMN summary TEXT');}
+export function initOutbox(db:ReturnType<typeof openStore>){db.exec('CREATE TABLE IF NOT EXISTS outbox(requestId TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL, taskId TEXT NOT NULL, status TEXT NOT NULL, serverSeq INTEGER, error TEXT, summary TEXT)');if(!db.prepare('PRAGMA table_info(outbox)').all().some((column:any)=>column.name==='summary'))db.exec('ALTER TABLE outbox ADD COLUMN summary TEXT');db.exec('CREATE TABLE IF NOT EXISTS change_log(requestId TEXT PRIMARY KEY, payload TEXT NOT NULL, logged INTEGER NOT NULL)');}
+function toolName(input:WriteInput){if(input.kind==='create')return input.parentId?'create_subtask':'create_task';const names:Record<string,string>={update:'update_task',complete:'complete_task',reopen:'reopen_task',tags:'update_task_tags',kanban:'set_task_kanban_status',delete:'delete_task',archive:'archive_done_tasks',move:'move_task',reorder:'reorder_subtask',detach:'detach_subtask',attach:'attach_task',time:'log_task_time',estimate:'set_task_estimate',create_tag:'create_tag',rename_tag:'rename_tag',create_project:'create_project',create_board:'create_board',update_board:'update_board',batch:'batch',undo:'undo_change'};return names[input.kind]??input.kind;}
+async function finishWrite(db:ReturnType<typeof openStore>,requestId:string,cfg:{baseUrl:string;accessToken:string},send:typeof fetch,onInvalidate:()=>void){
+ const result=await submit(db,requestId,cfg,send,onInvalidate);
+ const row=db.prepare('SELECT payload, logged FROM change_log WHERE requestId=?').get(requestId) as {payload:string;logged:number}|undefined;
+ if(row&&!row.logged){
+  const payload=JSON.parse(row.payload);payload.serverSeqAfter=result.serverSeq;payload.at=new Date().toISOString();
+  try{appendChange(payload);}catch{throw new Error('CHANGE_LOG_FAILED');}
+  db.prepare('UPDATE change_log SET payload=?, logged=1 WHERE requestId=?').run(JSON.stringify(payload),requestId);
+ }
+ return result;
+}
 export async function submit(db:ReturnType<typeof openStore>,requestId:string,cfg:{baseUrl:string;accessToken:string},send:typeof fetch=fetch,onInvalidate=invalidate){
  const row=db.prepare('SELECT * FROM outbox WHERE requestId=?').get(requestId)!;
  if(row.status==='rejected')throw new Error(row.error==='PARTIALLY_ACCEPTED'?'WRITE_PARTIALLY_ACCEPTED':'WRITE_REJECTED');
@@ -349,13 +362,22 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
  try{
   const fingerprint=createHmac('sha256',cfg.encryptionPassword).update(JSON.stringify(Object.fromEntries(Object.entries(input).sort(([a],[b])=>a.localeCompare(b))))).digest('hex');
   const existing=db.prepare('SELECT fingerprint FROM outbox WHERE requestId=?').get(input.requestId);
-  if(existing){if(existing.fingerprint!==fingerprint)throw new Error('IDEMPOTENCY_KEY_REUSED');return await submit(db,input.requestId,cfg,deps.send,onInvalidate);}
+  if(existing){if(existing.fingerprint!==fingerprint)throw new Error('IDEMPOTENCY_KEY_REUSED');return await finishWrite(db,input.requestId,cfg,deps.send,onInvalidate);}
   if(db.prepare("SELECT 1 FROM outbox WHERE status='pending'").get())throw new Error('WRITE_PENDING_RETRY_SAME_REQUEST');
   if(input.expectedServerSeq!==p.serverSeq)throw new Error('STALE_REVISION_READ_AGAIN');
   const official=await deps.officialModule();const now=Date.now();
+  let state=p.state;let plans:any[];let changeEntities;
+  if(input.kind==='undo'){
+   if(!input.changeId)throw new Error('UNDO_NOT_FOUND');
+   const entry=findChange(input.changeId);
+   if(!entry)throw new Error('UNDO_NOT_FOUND');
+   const undone=planUndo(entry,p.state,official,now);
+   plans=[{kind:'undo',taskId:undone.taskId,actions:undone.actions,bulkIds:undefined,isBoard:false,isTag:false}];
+   state=undone.predicted;changeEntities=diffEntities(p.state,state);
+  }else{
   const steps=input.kind==='batch'?input.operations!:[input];
   const conflicts=input.kind==='batch'?rejectBatchConflicts(steps,input.requestId):undefined;
-  let state=p.state;const produced:string[]=[];const plans=[];
+  const produced:string[]=[];plans=[];changeEntities=undefined;
   for(const [index,raw] of steps.entries()){
    const fromTags=raw.addTagIdsFrom??[];
    if(input.kind==='batch'&&(!Array.isArray(fromTags)||fromTags.some(ref=>!Number.isInteger(ref)||ref<0||ref>=produced.length)))throw new Error('WRITE_VALIDATION_FAILED');
@@ -364,6 +386,8 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
    const plan=planOperation(step,state,official,now);
    conflicts?.remember(index,raw,step,state,plan.bulkIds);
    plans.push(plan);produced.push(plan.taskId);state=plan.predicted;
+  }
+  changeEntities=diffEntities(p.state,state);
   }
   const actionCount=plans.reduce((count,plan)=>count+plan.actions.length,0);
   if(actionCount<1||actionCount>MAX_UPLOAD_OPS)throw new Error('WRITE_VALIDATION_FAILED');
@@ -381,7 +405,8 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   // Archive is the official bulk moveToArchive op: entityIds lists every parent
   // and cascaded subtask so a concurrent subtask edit cannot resurrect it.
   // Other writes still send entityId only.
-  ops.push({id:official.uuidv7(),clientId,actionType:type,opType:plan.kind==='delete'?'DEL':plan.kind==='reorder'?'MOV':index===0&&plan.kind.startsWith('create')?'CRT':'UPD',entityType:type.startsWith('[Planner]')?'PLANNER':plan.isBoard?'BOARD':plan.kind==='create_project'?'PROJECT':plan.isTag?'TAG':'TASK',entityId:plan.taskId,...(plan.kind==='archive'?{entityIds:plan.bulkIds}:{}),payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+clockIndex},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION});
+  const undoType=plan.kind==='undo'?(a.type.startsWith('[Tag]')?'TAG':a.type.startsWith('[Project]')||a.type.includes('deleteProject')?'PROJECT':'TASK'):undefined;
+  ops.push({id:official.uuidv7(),clientId,actionType:type,opType:plan.kind==='undo'?(a.type.includes('delete')||a.type.includes('Delete')?'DEL':'UPD'):plan.kind==='delete'?'DEL':plan.kind==='reorder'?'MOV':index===0&&plan.kind.startsWith('create')?'CRT':'UPD',entityType:undoType??(type.startsWith('[Planner]')?'PLANNER':plan.isBoard?'BOARD':plan.kind==='create_project'?'PROJECT':plan.isTag?'TAG':'TASK'),entityId:plan.taskId,...(plan.kind==='archive'?{entityIds:plan.bulkIds}:{}),payload:await encrypt(JSON.stringify({actionPayload,entityChanges:[]}),cfg.encryptionPassword),isPayloadEncrypted:true,vectorClock:{...p.clock,[clientId]:counter+clockIndex},timestamp:now,schemaVersion:CURRENT_SCHEMA_VERSION});
   clockIndex++;
   }
   const summary=input.kind==='batch'||plans.some(plan=>plan.bulkIds)?{...(input.kind==='batch'?{operations:plans.map((plan,index)=>({index,kind:plan.kind,taskId:plan.taskId,...(plan.bulkIds?{archivedTaskIds:plan.bulkIds}:{})}))}:{}),...(plans.length===1&&plans[0].bulkIds?{archivedTaskIds:plans[0].bulkIds}:{})}:undefined;
@@ -390,9 +415,10 @@ export async function perform(input:WriteInput,deps={loadCredentials,current,ope
   try{
    db.prepare("INSERT INTO metadata(key,value) VALUES('clientCounter',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(counter+ops.length-1));
    db.prepare("INSERT INTO outbox(requestId,fingerprint,body,taskId,status,summary) VALUES(?,?,?,?,'pending',?)").run(input.requestId,fingerprint,body,plans[0].taskId,summary?JSON.stringify(summary):null);
+   db.prepare('INSERT INTO change_log(requestId, payload, logged) VALUES(?,?,0)').run(input.requestId,JSON.stringify({id:randomUUID(),tool:toolName(input),requestId:input.requestId,serverSeqBefore:p.serverSeq,entities:changeEntities}));
    db.exec('COMMIT');
   }catch(e){db.exec('ROLLBACK');throw e;}
-  return await submit(db,input.requestId,cfg,deps.send,onInvalidate);
+  return await finishWrite(db,input.requestId,cfg,deps.send,onInvalidate);
  }finally{db.close();}
 }
 

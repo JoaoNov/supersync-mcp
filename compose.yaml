@@ -27,6 +27,8 @@ services:
       RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-120}"
       RATE_LIMIT_WINDOW_MS: "${RATE_LIMIT_WINDOW_MS:-60000}"
       TZ: "${TZ:-Europe/Brussels}"
+      CHANGE_LOG_PATH: "${CHANGE_LOG_PATH:-data/changes/changes.jsonl}"
+      CHANGE_LOG_MAX_BYTES: "${CHANGE_LOG_MAX_BYTES:-1048576}"
     restart: unless-stopped
     # Publish only on the host interface named by MCP_BIND_ADDRESS.
     # 127.0.0.1 keeps the port off every other interface. Set it to a private
@@ -44,6 +46,7 @@ services:
       - ./secrets/accounts.json:/workspace/secrets/accounts.json:ro
       - ./secrets/access.key:/workspace/secrets/access.key:ro
       - ./data:/workspace/data
+      - changes:/workspace/data/changes
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
@@ -57,3 +60,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  changes:

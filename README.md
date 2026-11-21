@@ -10,7 +10,7 @@ It is not part of the official Super Productivity project. It is a single-accoun
 
 | Kind | Tools |
 |---|---|
-| Status and lookup | get_sync_status / list_tasks / search_tasks / list_today / get_task / get_task_time |
+| Status and lookup | get_sync_status / list_tasks / search_tasks / list_today / get_task / get_task_time / list_changes |
 | Lists | list_projects / list_tags / list_archived_tasks |
 | Boards | get_board |
 | Create and edit | create_task / create_subtask / update_task / reorder_subtask / detach_subtask / attach_task |
@@ -19,12 +19,13 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Archive | archive_done_tasks |
 | Time | log_task_time / set_task_estimate |
 | Batch | batch |
+| Undo | undo_change |
 | Tags | update_task_tags / create_tag / rename_tag |
 | Standard Kanban | set_task_kanban_status |
 | Projects | create_project / move_task |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 31 tools. With writes off, only the 10 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 33 tools. With writes off, only the 11 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - `search_tasks` filters active tasks and, when asked, archived tasks. It matches title and notes, one project, one tag, a due-day range, and done state. TODAY follows the due day and is not a tag filter.
 - `list_today` returns tasks due or scheduled today, undone overdue tasks, and undone overdue deadlines. The day is Europe/Brussels unless `TZ` is set, and it follows the account start-of-next-day offset. Archived tasks and tasks in archived projects are omitted.
@@ -33,6 +34,7 @@ Version 0.3.0 defines 31 tools. With writes off, only the 10 read tools are regi
 - `delete_task` requires `confirm: true`. It sends the official `[Task Shared] deleteTask` operation (`opType` `DEL`) for an active task, including nested subtasks. Archived tasks are refused. Planner day ids are not rewritten.
 - `archive_done_tasks` requires `confirm: true`. It archives every done top-level active task and that task's subtasks with the official `moveToArchive` operation, including subtask ids in `entityIds`. Done subtasks of an undone parent stay active.
 - `update_task` does not change `projectId`. `move_task` sends `[Task Shared] moveToOtherProject` for a top-level task and its subtasks.
+- Every successful write, including `batch`, appends one line to an append-only JSONL file. The default path is `data/changes/changes.jsonl`, set with `CHANGE_LOG_PATH`, and it must stay under `data/changes/`. Docker Compose mounts the named volume `changes` there so the file survives a new container. `CHANGE_LOG_MAX_BYTES` defaults to 1 MiB. When the next line would pass that cap, the current file is renamed to the same name with `.1` and a new file is started. The previous `.1` file is removed, so the log stays within about two caps. An entry stores the time, tool, `requestId`, `serverSeq` before and after the upload, and the before and after state of each affected task, project, tag, or board. It does not store the access key, the SuperSync token, or the encryption password. `list_changes` reads that log, newest first. `undo_change` sends the inverse official sync actions for one entry id. Pass `expectedServerSeq` from a fresh read. If any affected entity no longer matches the logged after state, the call returns `UNDO_CONFLICT` and uploads nothing. A successful undo is appended as its own entry. Some writes, such as a board edit whose inverse the official reducers do not restore exactly, return `UNDO_UNSUPPORTED` and upload nothing. A rejected upload, including `WRITE_PARTIALLY_ACCEPTED`, is not logged, so undo cannot roll back a prefix the server already accepted. The log keeps the current file and one rotated file only.
 - `batch` runs 1 to 20 write operations in order and uploads them as one SuperSync request with one `expectedServerSeq` and one `requestId`. `idFrom`, `projectIdFrom`, `parentIdFrom`, `targetProjectIdFrom`, and `addTagIdsFrom` use the id created by an earlier operation in that batch. If `expectedServerSeq` is not the current sequence, nothing is uploaded. Every operation is replayed through the official reducers before the upload, and a failure in any of them uploads nothing. The batch is also rejected before upload when its operations contradict each other. `BATCH_CONFLICT` names the operations by index, kind, and requestId. That includes a later operation on a task deleted or archived earlier in the batch, moving one task to two projects, deleting a task completed earlier in the batch, a repeated operation `requestId`, and an id that is neither in the account nor produced by an earlier operation in the batch. An operation `requestId` is optional and must be unique inside the batch. The same batch `requestId` retries that same upload. SuperSync still decides each operation inside the request. If the server accepts some and rejects others, the call fails with `WRITE_PARTIALLY_ACCEPTED` and does not upload that request again. Read the account again and send a new request for whatever is still missing. A fully rejected upload leaves none of the batch on the server.
 - Task text updates change `title` and `notes`. Archive restore and card reordering are not provided.
 - Boards take a name, 1 to 50 columns, existing tags, and done, schedule, or backlog filters. They do not force eight states or mutual exclusion.

@@ -5,6 +5,7 @@ import {officialModule} from './projection.js';
 import {dateSchema,hasDates,validDay,validateDates} from './dates.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';import {boardOutput,columnSchema,columnPatchSchema,publicBoard} from './boards.js';import {writeTask,type WriteInput} from './write.js';import {current} from './sync.js';
+import {listChanges} from './change-log.js';
 function selectFields(value:any,keys:string[]){return Object.fromEntries(keys.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]]));}
 const taskFields=['id','title','notes','isDone','projectId','tagIds','parentId','subTaskIds','timeEstimate','timeSpent','dueDay','dueWithTime','deadlineDay','deadlineWithTime','created','doneOn'];
 function publicTask(task:any){return {...selectFields(task,taskFields),scheduleReminder:publicReminder(task.dueWithTime,task.remindAt),deadlineReminder:publicReminder(task.deadlineWithTime,task.deadlineRemindAt)};}
@@ -30,10 +31,11 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
   return {content:[{type:'text' as const,text}],structuredContent:JSON.parse(text) as Record<string,unknown>};
  };
  const error=(e:unknown)=>{
-  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TAG_NAME_ALREADY_EXISTS','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT','SEARCH_VALIDATION_FAILED','ARCHIVE_EMPTY']);
+  const known=new Set(['PROJECTION_ACTION_UNSUPPORTED','PROJECTION_CONFLICT_UNSUPPORTED','PROJECTION_LOG_GAP','PROJECTION_SNAPSHOT_REQUIRED','PROJECTION_NOT_CURRENT','SUPERSYNC_UNAVAILABLE','DECRYPTION_FAILED','UNSUPPORTED_SCHEMA_VERSION','SYNC_LIMIT','SYNC_NO_PROGRESS','WRITE_REJECTED','WRITE_PARTIALLY_ACCEPTED','WRITE_PENDING_RETRY_SAME_REQUEST','IDEMPOTENCY_KEY_REUSED','STALE_REVISION_READ_AGAIN','PROJECT_NOT_FOUND','BOARD_NOT_FOUND','PROJECT_NAME_ALREADY_EXISTS','TASK_NOT_FOUND','WRITE_VALIDATION_FAILED','TAG_NOT_FOUND','TAG_NAME_ALREADY_EXISTS','TODAY_REQUIRES_SCHEDULING','PARENT_PROJECT_MISMATCH','INVALID_TASK_HIERARCHY','REMINDER_REQUIRES_TIME','REMINDER_SCHEDULE_CONFLICT','SEARCH_VALIDATION_FAILED','ARCHIVE_EMPTY','UNDO_NOT_FOUND','UNDO_UNSUPPORTED','CHANGE_LOG_FAILED']);
   const raw=e instanceof Error?e.message:'';
-  const detail=raw.startsWith('BATCH_CONFLICT:')?raw.slice('BATCH_CONFLICT:'.length).trim():'';
-  const code=known.has(raw)?raw:detail?'BATCH_CONFLICT':'SYNC_FAILED';
+  const named=raw.match(/^(BATCH_CONFLICT|UNDO_CONFLICT):\s*([\s\S]*)$/);
+  const detail=named?named[2].trim():'';
+  const code=known.has(raw)?raw:named?named[1]:'SYNC_FAILED';
   console.warn(JSON.stringify({event:'sync_failed',reason:code}));
   return {isError:true,content:[{type:'text' as const,text:'Could not complete the operation. Diagnostic code: '+code+(detail?'. '+detail:'')}]};
  };
@@ -71,6 +73,10 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
 
  mcp.registerTool('get_board',{description:'Get a board by id, including its columns and card order. Returns null when the board is missing.',inputSchema:{id:z.string().min(1).max(255)},outputSchema:{serverSeq:serverSeqOutput,board:boardOutput.nullable()},annotations},async({id})=>{try{const p=await provider();return output({serverSeq:p.serverSeq,board:publicBoard(p.state.boards.boardCfgs.find((b:any)=>b.id===id))});}catch(e){return error(e);}});
 
+ const changeEntity=z.object({entityType:z.enum(['task','project','tag','board']),id:z.string(),boxBefore:z.string().nullable(),boxAfter:z.string().nullable(),before:z.record(z.string(),z.any()).nullable(),after:z.record(z.string(),z.any()).nullable()});
+ mcp.registerTool('list_changes',{description:'List append-only write-log entries, newest first. Each entry has the tool, requestId, serverSeq before and after the upload, and the before and after state of each affected task, project, tag, or board. The log contains no access keys or account secrets. offset and limit page the file.',inputSchema:{offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(50).default(20)},outputSchema:{serverSeq:serverSeqOutput,total:z.number().int().min(0),items:z.array(z.object({id:z.string(),at:z.string(),tool:z.string(),requestId:z.string(),serverSeqBefore:z.number().int().min(0),serverSeqAfter:z.number().int().min(0),entities:z.array(changeEntity)}))},annotations},async({offset,limit})=>{
+  try{const p=await provider();const page=listChanges(offset,limit);return output({serverSeq:p.serverSeq,total:page.total,items:page.items});}catch(e){return error(e);}
+ });
  if(canWrite){
   const base={requestId:z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).describe('Unique id for this operation. After an unknown result, retry with the same id and the same arguments.'),expectedServerSeq:z.number().int().min(0).describe('serverSeq from the latest read. On conflict, read again and retry with a new request id.')};
   const writeAnnotations={readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false};
@@ -94,6 +100,7 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
   const destructive={...writeAnnotations,destructiveHint:true};
   mcp.registerTool('delete_task',{description:'Delete an active task the way the app does: the official deleteTask action removes the task, its subtasks, and their project, tag, and section references. confirm must be true. Archived tasks are not deleted. Planner day lists are left as the app leaves them until the planner cleans undefined tasks.',inputSchema:{...base,id:z.string().min(1).max(255),confirm:z.literal(true)},outputSchema:writeOutput,annotations:destructive},async args=>{try{return output(await writer({...args,kind:'delete'}));}catch(e){return error(e);}});
   mcp.registerTool('archive_done_tasks',{description:'Archive every done top-level active task, including subtasks, the way Finish Day does on the Today list. Sends one official moveToArchive operation. confirm must be true. Done subtasks of an undone parent are left in place. Refuses when there is nothing to archive.',inputSchema:{...base,confirm:z.literal(true)},outputSchema:{...writeOutput,archivedTaskIds:z.array(z.string()).optional()},annotations:destructive},async args=>{try{return output(await writer({...args,kind:'archive'}));}catch(e){return error(e);}});
+  mcp.registerTool('undo_change',{description:'Undo one write-log entry by id. Uses a fresh expectedServerSeq from the latest read and sends the inverse official sync actions. If any affected entity no longer matches the logged after state, for example because it was edited on another device, nothing is uploaded. A successful undo is itself appended to the log.',inputSchema:{...base,id:z.string().uuid()},outputSchema:writeOutput,annotations:destructive},async args=>{try{return output(await writer({requestId:args.requestId,expectedServerSeq:args.expectedServerSeq,kind:'undo',changeId:args.id}));}catch(e){return error(e);}});
   const batchOperation=z.object({
    kind:z.enum(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','estimate','create_tag','rename_tag']),
    id:z.string().min(1).max(255).optional(),idFrom:z.number().int().min(0).max(19).optional(),

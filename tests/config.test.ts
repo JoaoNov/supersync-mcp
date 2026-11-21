@@ -8,6 +8,8 @@ test('server config defaults to a local read-only listener and rejects unsafe va
  assert.equal(config.port,1901);
  assert.equal(config.allowWrites,false);
  assert.equal(config.timeZone,'Europe/Brussels');
+ assert.equal(config.changeLogPath,'data/changes/changes.jsonl');
+ assert.equal(config.changeLogMaxBytes,1024*1024);
  assert.deepEqual(config.allowedHosts,['127.0.0.1','localhost']);
  const custom=loadServerConfig({LISTEN_HOST:'10.1.2.3',PORT:'1902',MCP_ALLOW_WRITES:'true',TZ:'UTC',ALLOWED_HOSTS:'tasks.internal'});
  assert.equal(custom.listenHost,'10.1.2.3');
@@ -19,6 +21,8 @@ test('server config defaults to a local read-only listener and rejects unsafe va
  assert.throws(()=>loadServerConfig({MCP_ALLOW_WRITES:'maybe'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({TZ:'Not/AZone'}),/SERVER_CONFIG_INVALID/);
  assert.throws(()=>loadServerConfig({LISTEN_HOST:''}),/SERVER_CONFIG_INVALID/);
+ assert.throws(()=>loadServerConfig({CHANGE_LOG_PATH:'secrets/changes.jsonl'}),/SERVER_CONFIG_INVALID/);
+ assert.throws(()=>loadServerConfig({CHANGE_LOG_PATH:'data/changes/../access.key'}),/SERVER_CONFIG_INVALID/);
  const dir=mkdtempSync(join(tmpdir(),'sp-config-')),path=join(dir,'credentials.json');
  // Windows chmod cannot express POSIX permissions. Simulate only this
  // fixture's stat mode; production permission validation stays unchanged.
