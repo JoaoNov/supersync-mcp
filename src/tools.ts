@@ -4,7 +4,7 @@ import {todayView} from './today.js';
 import {officialModule} from './projection.js';
 import {dateSchema,hasDates,validDay,validateDates} from './dates.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {z} from 'zod';import {boardOutput,columnSchema,columnPatchSchema,publicBoard} from './boards.js';import {writeTask} from './write.js';import {current} from './sync.js';
+import {z} from 'zod';import {boardOutput,columnSchema,columnPatchSchema,publicBoard} from './boards.js';import {writeTask,type WriteInput} from './write.js';import {current} from './sync.js';
 function selectFields(value:any,keys:string[]){return Object.fromEntries(keys.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]]));}
 const taskFields=['id','title','notes','isDone','projectId','tagIds','parentId','subTaskIds','timeEstimate','timeSpent','dueDay','dueWithTime','deadlineDay','deadlineWithTime','created','doneOn'];
 function publicTask(task:any){return {...selectFields(task,taskFields),scheduleReminder:publicReminder(task.dueWithTime,task.remindAt),deadlineReminder:publicReminder(task.deadlineWithTime,task.deadlineRemindAt)};}
@@ -92,6 +92,20 @@ export function makeServer(provider:typeof current=current,canWrite=false,writer
   const destructive={...writeAnnotations,destructiveHint:true};
   mcp.registerTool('delete_task',{description:'Delete an active task the way the app does: the official deleteTask action removes the task, its subtasks, and their project, tag, and section references. confirm must be true. Archived tasks are not deleted. Planner day lists are left as the app leaves them until the planner cleans undefined tasks.',inputSchema:{...base,id:z.string().min(1).max(255),confirm:z.literal(true)},outputSchema:writeOutput,annotations:destructive},async args=>{try{return output(await writer({...args,kind:'delete'}));}catch(e){return error(e);}});
   mcp.registerTool('archive_done_tasks',{description:'Archive every done top-level active task, including subtasks, the way Finish Day does on the Today list. Sends one official moveToArchive operation. confirm must be true. Done subtasks of an undone parent are left in place. Refuses when there is nothing to archive.',inputSchema:{...base,confirm:z.literal(true)},outputSchema:{...writeOutput,archivedTaskIds:z.array(z.string()).optional()},annotations:destructive},async args=>{try{return output(await writer({...args,kind:'archive'}));}catch(e){return error(e);}});
+  const batchOperation=z.object({
+   kind:z.enum(['create','create_project','create_board','update_board','update','complete','reopen','tags','kanban','delete','archive','move','reorder','detach','attach','time','estimate','create_tag','rename_tag']),
+   id:z.string().min(1).max(255).optional(),idFrom:z.number().int().min(0).max(19).optional(),
+   projectId:z.string().min(1).max(255).optional(),projectIdFrom:z.number().int().min(0).max(19).optional(),
+   parentId:z.string().min(1).max(255).optional(),parentIdFrom:z.number().int().min(0).max(19).optional(),
+   targetProjectId:z.string().min(1).max(255).optional(),targetProjectIdFrom:z.number().int().min(0).max(19).optional(),
+   title:z.string().min(1).max(2000).optional(),notes:z.string().max(20000).optional(),color:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+   addTagIds:z.array(z.string().min(1).max(255)).max(100).optional(),removeTagIds:z.array(z.string().min(1).max(255)).max(100).optional(),addTagIdsFrom:z.array(z.number().int().min(0).max(19)).max(20).optional(),
+   status:z.enum(['todo','in_progress','done']).optional(),direction:z.enum(['up','down','top','bottom']).optional(),afterTaskId:z.string().min(1).max(255).nullable().optional(),
+   duration:z.number().int().min(1).max(1000*60*60*1000).optional(),day:z.string().refine(validDay).optional(),timeEstimate:z.number().int().min(0).max(1000*60*60*1000).optional(),
+   confirm:z.literal(true).optional(),cols:z.number().int().min(1).max(12).optional(),columns:z.array(z.union([columnSchema,columnPatchSchema])).max(50).optional(),
+   ...dateSchema,
+  });
+  mcp.registerTool('batch',{description:'Apply 1 to 20 write operations in one call and upload them as one SuperSync request. The batch uses one expectedServerSeq. If that sequence is not current, nothing is uploaded. Every operation is checked against the official reducers, in order, before the upload. idFrom, projectIdFrom, parentIdFrom, targetProjectIdFrom, and addTagIdsFrom refer to the id produced by an earlier operation in this batch. The same requestId retries the same upload and does not start a second one. SuperSync still accepts or rejects each operation inside that request. A mixed result fails the call and is not retried as a success; read again before a new request.',inputSchema:{...base,operations:z.array(batchOperation).min(1).max(20)},outputSchema:{...writeOutput,operations:z.array(z.object({index:z.number().int(),kind:z.string(),taskId:z.string(),archivedTaskIds:z.array(z.string()).optional()})).optional(),archivedTaskIds:z.array(z.string()).optional()},annotations:writeAnnotations},async args=>{try{return output(await writer({...args,kind:'batch'} as WriteInput));}catch(e){return error(e);}});
  }
  return mcp;
 }

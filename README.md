@@ -18,12 +18,13 @@ It is not part of the official Super Productivity project. It is a single-accoun
 | Delete | delete_task |
 | Archive | archive_done_tasks |
 | Time | log_task_time / set_task_estimate |
+| Batch | batch |
 | Tags | update_task_tags / create_tag / rename_tag |
 | Standard Kanban | set_task_kanban_status |
 | Projects | create_project / move_task |
 | Boards | create_board / update_board |
 
-Version 0.3.0 defines 30 tools. With writes off, only the 10 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
+Version 0.3.0 defines 31 tools. With writes off, only the 10 read tools are registered. Successful results use `structuredContent` and a JSON text fallback.
 
 - `search_tasks` filters active tasks and, when asked, archived tasks. It matches title and notes, one project, one tag, a due-day range, and done state. TODAY follows the due day and is not a tag filter.
 - `list_today` returns tasks due or scheduled today, undone overdue tasks, and undone overdue deadlines. The day is Europe/Brussels unless `TZ` is set, and it follows the account start-of-next-day offset. Archived tasks and tasks in archived projects are omitted.
@@ -32,6 +33,7 @@ Version 0.3.0 defines 30 tools. With writes off, only the 10 read tools are regi
 - `delete_task` requires `confirm: true`. It sends the official `[Task Shared] deleteTask` operation (`opType` `DEL`) for an active task, including nested subtasks. Archived tasks are refused. Planner day ids are not rewritten.
 - `archive_done_tasks` requires `confirm: true`. It archives every done top-level active task and that task's subtasks with the official `moveToArchive` operation, including subtask ids in `entityIds`. Done subtasks of an undone parent stay active.
 - `update_task` does not change `projectId`. `move_task` sends `[Task Shared] moveToOtherProject` for a top-level task and its subtasks.
+- `batch` runs 1 to 20 write operations in order and uploads them as one SuperSync request with one `expectedServerSeq` and one `requestId`. `idFrom`, `projectIdFrom`, `parentIdFrom`, `targetProjectIdFrom`, and `addTagIdsFrom` use the id created by an earlier operation in that batch. If `expectedServerSeq` is not the current sequence, nothing is uploaded. Every operation is replayed through the official reducers before the upload, and a failure in any of them uploads nothing. The same `requestId` retries that same upload. SuperSync still decides each operation inside the request. If the server accepts some and rejects others, the call fails with `WRITE_PARTIALLY_ACCEPTED` and does not upload that request again. Read the account again and send a new request for whatever is still missing. A fully rejected upload leaves none of the batch on the server.
 - Task text updates change `title` and `notes`. Archive restore and card reordering are not provided.
 - Boards take a name, 1 to 50 columns, existing tags, and done, schedule, or backlog filters. They do not force eight states or mutual exclusion.
 - `update_board` changes settings of existing columns and keeps column order, card placement, project scope, and task bodies.

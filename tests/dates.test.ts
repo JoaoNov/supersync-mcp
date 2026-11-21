@@ -72,7 +72,7 @@ test('encrypted date writes replay official reducers; outbox retry, concurrency,
 
 test('outbox batch does not accept a missing or rejected later result',async()=>{
  for(const missing of [true,false]){
-  const db=openStore(':memory:');initOutbox(db);const body=JSON.stringify({ops:[{id:'one'},{id:'two'}]});db.prepare("INSERT INTO outbox VALUES('r','f',?,'t','pending',NULL,NULL)").run(body);
+  const db=openStore(':memory:');initOutbox(db);const body=JSON.stringify({ops:[{id:'one'},{id:'two'}]});db.prepare("INSERT INTO outbox VALUES('r','f',?,'t','pending',NULL,NULL,NULL)").run(body);
   const results:any[]=[{opId:'one',accepted:true,serverSeq:1}];if(!missing)results.push({opId:'two',accepted:false,errorCode:'CONFLICT'});
   await assert.rejects(submit(db,'r',{baseUrl:'https://example.invalid',accessToken:'test'},(async()=>new Response(JSON.stringify({results,latestSeq:1}))) as any),missing?/WRITE_PENDING/:/WRITE_PARTIALLY_ACCEPTED/);
   assert.notEqual(db.prepare('SELECT status FROM outbox').get()?.status,'accepted');db.close();
